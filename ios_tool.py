@@ -802,75 +802,119 @@ def run_gui():
             QStackedWidget, QScrollArea
         )
         from PyQt6.QtCore import (
-            Qt, QTimer, QThread, pyqtSignal, QRectF, QPointF
+            Qt, QTimer, QThread, pyqtSignal, QRectF, QPointF, QSize
         )
         from PyQt6.QtGui import (
             QFont, QColor, QPainter, QPen, QBrush, QLinearGradient,
-            QRadialGradient, QPainterPath, QPalette, QFontDatabase
+            QRadialGradient, QPainterPath, QPalette, QFontDatabase,
+            QIcon, QPixmap
         )
     except ImportError:
         print("Error: PyQt6 is required for GUI mode.")
         print("Install with: pip install PyQt6")
         sys.exit(1)
     
-    # ============ Simple Universe Background ============
+    # Get logo path
+    script_dir = Path(__file__).parent
+    logo_path = script_dir / "logo.jpg"
+    
+    # ============ Grok-style Milky Way Background ============
     @dataclass
     class Star:
         x: float
         y: float
-        z: float  # Depth for parallax
         size: float
         brightness: float
+        twinkle_speed: float
+        twinkle_phase: float
     
-    class UniverseWidget(QWidget):
-        """Simple animated universe with flowing stars - Grok style."""
+    @dataclass
+    class CosmicDust:
+        x: float
+        y: float
+        size: float
+        alpha: float
+        drift_x: float
+        drift_y: float
+    
+    class GrokSpaceWidget(QWidget):
+        """Grok AI style animated space background with milky way."""
         
         def __init__(self, parent=None):
             super().__init__(parent)
             self.stars: List[Star] = []
+            self.cosmic_dust: List[CosmicDust] = []
             self.time = 0.0
-            self.center_x = 0.0
-            self.center_y = 0.0
+            self.milky_way_phase = 0.0
             
-            self._init_stars()
+            self._init_cosmos()
             
             self.timer = QTimer(self)
             self.timer.timeout.connect(self._animate)
-            self.timer.start(16)  # ~60 FPS for smooth animation
+            self.timer.start(33)  # ~30 FPS
         
-        def _init_stars(self):
-            """Initialize star field."""
+        def _init_cosmos(self):
+            """Initialize stars and cosmic dust."""
             self.stars.clear()
+            self.cosmic_dust.clear()
             
-            # Create 300 stars at random positions with depth
-            for _ in range(300):
+            w = max(1920, self.width() if self.width() > 0 else 1920)
+            h = max(1080, self.height() if self.height() > 0 else 1080)
+            
+            # Create stars - more concentrated in center (milky way band)
+            for _ in range(400):
+                # Bias toward center vertically for milky way effect
+                if random.random() < 0.6:
+                    # Milky way band stars
+                    y = h * 0.3 + random.gauss(0, h * 0.15)
+                else:
+                    # Background stars
+                    y = random.uniform(0, h)
+                
                 self.stars.append(Star(
-                    x=random.uniform(-1, 1),
-                    y=random.uniform(-1, 1),
-                    z=random.uniform(0.1, 1.0),
-                    size=random.uniform(1, 3),
-                    brightness=random.uniform(0.4, 1.0)
+                    x=random.uniform(0, w),
+                    y=y,
+                    size=random.uniform(0.5, 2.5),
+                    brightness=random.uniform(0.3, 1.0),
+                    twinkle_speed=random.uniform(0.02, 0.08),
+                    twinkle_phase=random.uniform(0, math.pi * 2)
+                ))
+            
+            # Cosmic dust particles for the milky way glow
+            for _ in range(150):
+                self.cosmic_dust.append(CosmicDust(
+                    x=random.uniform(0, w),
+                    y=h * 0.25 + random.gauss(0, h * 0.12),
+                    size=random.uniform(30, 120),
+                    alpha=random.uniform(0.02, 0.08),
+                    drift_x=random.uniform(-0.3, 0.3),
+                    drift_y=random.uniform(-0.1, 0.1)
                 ))
         
         def resizeEvent(self, event):
             super().resizeEvent(event)
-            self.center_x = self.width() / 2
-            self.center_y = self.height() / 2
+            self._init_cosmos()
         
         def _animate(self):
-            """Update star positions - move toward viewer."""
-            self.time += 0.008
+            """Update animation state."""
+            self.time += 0.016
+            self.milky_way_phase += 0.003
             
+            # Update star twinkle
             for star in self.stars:
-                # Move stars toward viewer (decrease z)
-                star.z -= 0.002
+                star.twinkle_phase += star.twinkle_speed
+            
+            # Slowly drift cosmic dust
+            w = self.width()
+            for dust in self.cosmic_dust:
+                dust.x += dust.drift_x
+                dust.y += dust.drift_y
                 
-                # Reset star when it passes the viewer
-                if star.z <= 0.01:
-                    star.x = random.uniform(-1, 1)
-                    star.y = random.uniform(-1, 1)
-                    star.z = 1.0
-                    star.brightness = random.uniform(0.4, 1.0)
+                # Wrap around
+                if dust.x < -dust.size:
+                    dust.x = w + dust.size
+                elif dust.x > w + dust.size:
+                    dust.x = -dust.size
             
             self.update()
         
@@ -880,95 +924,130 @@ def run_gui():
             
             w = self.width()
             h = self.height()
-            cx = w / 2
-            cy = h / 2
             
             # Pure black background
             painter.fillRect(self.rect(), QColor(0, 0, 0))
             
-            # Draw subtle gradient glow in center (like distant galaxy)
-            glow = QRadialGradient(cx, cy * 0.7, max(w, h) * 0.4)
-            glow.setColorAt(0.0, QColor(40, 40, 60, 30))
-            glow.setColorAt(0.5, QColor(20, 20, 40, 15))
-            glow.setColorAt(1.0, QColor(0, 0, 0, 0))
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QBrush(glow))
-            painter.drawEllipse(QRectF(0, 0, w, h))
+            # Draw the milky way band
+            self._draw_milky_way(painter, w, h)
             
-            # Sort stars by depth (far to near)
-            sorted_stars = sorted(self.stars, key=lambda s: s.z, reverse=True)
+            # Draw cosmic dust
+            self._draw_cosmic_dust(painter)
             
-            # Draw stars with perspective projection
-            for star in sorted_stars:
-                # Project 3D to 2D with perspective
-                scale = 1.0 / star.z
-                screen_x = cx + star.x * scale * w * 0.5
-                screen_y = cy + star.y * scale * h * 0.5
+            # Draw stars
+            self._draw_stars(painter)
+        
+        def _draw_milky_way(self, painter: QPainter, w: int, h: int):
+            """Draw the milky way band like in Grok app."""
+            center_y = h * 0.35
+            
+            # Multiple layers for depth
+            for layer in range(5):
+                spread = 80 + layer * 40
+                alpha_base = 25 - layer * 4
                 
-                # Skip if outside screen
-                if screen_x < -50 or screen_x > w + 50 or screen_y < -50 or screen_y > h + 50:
+                # Wavy path across screen
+                path = QPainterPath()
+                
+                points = []
+                for i in range(20):
+                    x = (i / 19) * w
+                    wave = math.sin(x * 0.003 + self.milky_way_phase + layer * 0.5) * 30
+                    wave += math.sin(x * 0.007 + self.milky_way_phase * 0.7) * 20
+                    y = center_y + wave
+                    points.append((x, y))
+                
+                if points:
+                    path.moveTo(points[0][0], points[0][1] - spread)
+                    
+                    # Top edge
+                    for x, y in points:
+                        path.lineTo(x, y - spread + math.sin(x * 0.01 + self.time) * 10)
+                    
+                    # Bottom edge (reverse)
+                    for x, y in reversed(points):
+                        path.lineTo(x, y + spread + math.sin(x * 0.01 + self.time + 1) * 10)
+                    
+                    path.closeSubpath()
+                
+                # Gradient fill
+                gradient = QLinearGradient(0, center_y - spread, 0, center_y + spread)
+                gradient.setColorAt(0.0, QColor(255, 255, 255, 0))
+                gradient.setColorAt(0.3, QColor(200, 200, 220, alpha_base))
+                gradient.setColorAt(0.5, QColor(220, 220, 235, alpha_base + 10))
+                gradient.setColorAt(0.7, QColor(200, 200, 220, alpha_base))
+                gradient.setColorAt(1.0, QColor(255, 255, 255, 0))
+                
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QBrush(gradient))
+                painter.drawPath(path)
+            
+            # Central bright core
+            core_gradient = QRadialGradient(w * 0.5, center_y, 200)
+            core_gradient.setColorAt(0.0, QColor(255, 255, 255, 40))
+            core_gradient.setColorAt(0.3, QColor(230, 230, 240, 25))
+            core_gradient.setColorAt(0.6, QColor(200, 200, 220, 10))
+            core_gradient.setColorAt(1.0, QColor(255, 255, 255, 0))
+            painter.setBrush(QBrush(core_gradient))
+            painter.drawEllipse(QRectF(w * 0.3, center_y - 150, w * 0.4, 300))
+        
+        def _draw_cosmic_dust(self, painter: QPainter):
+            """Draw floating cosmic dust particles."""
+            for dust in self.cosmic_dust:
+                alpha = int(dust.alpha * 255 * (0.7 + 0.3 * math.sin(self.time + dust.x * 0.01)))
+                
+                gradient = QRadialGradient(dust.x, dust.y, dust.size)
+                gradient.setColorAt(0.0, QColor(230, 230, 240, alpha))
+                gradient.setColorAt(0.4, QColor(200, 200, 220, alpha // 2))
+                gradient.setColorAt(1.0, QColor(255, 255, 255, 0))
+                
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QBrush(gradient))
+                painter.drawEllipse(QRectF(
+                    dust.x - dust.size,
+                    dust.y - dust.size,
+                    dust.size * 2,
+                    dust.size * 2
+                ))
+        
+        def _draw_stars(self, painter: QPainter):
+            """Draw twinkling stars."""
+            for star in self.stars:
+                # Twinkle effect
+                twinkle = 0.5 + 0.5 * math.sin(star.twinkle_phase)
+                alpha = int(star.brightness * twinkle * 255)
+                
+                if alpha < 20:
                     continue
                 
-                # Size and brightness based on depth
-                size = star.size * scale * 0.8
-                size = min(size, 8)  # Cap max size
+                color = QColor(255, 255, 255, alpha)
                 
-                alpha = int(star.brightness * (1.0 - star.z * 0.5) * 255)
-                alpha = max(0, min(255, alpha))
-                
-                if alpha < 15:
-                    continue
-                
-                # Draw star glow for closer stars
-                if size > 2:
-                    glow_size = size * 3
-                    glow_gradient = QRadialGradient(screen_x, screen_y, glow_size)
-                    glow_gradient.setColorAt(0.0, QColor(255, 255, 255, alpha // 4))
-                    glow_gradient.setColorAt(0.5, QColor(200, 210, 255, alpha // 8))
-                    glow_gradient.setColorAt(1.0, QColor(0, 0, 0, 0))
-                    painter.setBrush(QBrush(glow_gradient))
+                # Glow for brighter stars
+                if star.size > 1.5 and alpha > 100:
+                    glow_size = star.size * 4
+                    glow = QRadialGradient(star.x, star.y, glow_size)
+                    glow.setColorAt(0.0, QColor(255, 255, 255, alpha // 3))
+                    glow.setColorAt(0.5, QColor(200, 210, 255, alpha // 6))
+                    glow.setColorAt(1.0, QColor(255, 255, 255, 0))
+                    
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    painter.setBrush(QBrush(glow))
                     painter.drawEllipse(QRectF(
-                        screen_x - glow_size,
-                        screen_y - glow_size,
+                        star.x - glow_size,
+                        star.y - glow_size,
                         glow_size * 2,
                         glow_size * 2
                     ))
                 
-                # Draw star core
-                color = QColor(255, 255, 255, alpha)
+                # Star core
+                painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(QBrush(color))
                 painter.drawEllipse(QRectF(
-                    screen_x - size / 2,
-                    screen_y - size / 2,
-                    size,
-                    size
+                    star.x - star.size / 2,
+                    star.y - star.size / 2,
+                    star.size,
+                    star.size
                 ))
-                
-                # Draw motion trail for fast-moving close stars
-                if star.z < 0.3 and size > 1.5:
-                    trail_length = (0.3 - star.z) * 30
-                    trail_alpha = alpha // 3
-                    
-                    # Trail going toward center
-                    dx = screen_x - cx
-                    dy = screen_y - cy
-                    dist = math.sqrt(dx * dx + dy * dy)
-                    if dist > 0:
-                        trail_x = screen_x - (dx / dist) * trail_length
-                        trail_y = screen_y - (dy / dist) * trail_length
-                        
-                        gradient = QLinearGradient(screen_x, screen_y, trail_x, trail_y)
-                        gradient.setColorAt(0, QColor(255, 255, 255, trail_alpha))
-                        gradient.setColorAt(1, QColor(255, 255, 255, 0))
-                        
-                        pen = QPen(QBrush(gradient), size * 0.5)
-                        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-                        painter.setPen(pen)
-                        painter.drawLine(
-                            int(screen_x), int(screen_y),
-                            int(trail_x), int(trail_y)
-                        )
-                        painter.setPen(Qt.PenStyle.NoPen)
     
     # ============ Icon Helper (Text-based icons) ============
     class Icons:
@@ -1016,6 +1095,10 @@ def run_gui():
             self.setMinimumSize(900, 700)
             self.resize(1000, 750)
             
+            # Set window icon from logo.jpg
+            if logo_path.exists():
+                self.setWindowIcon(QIcon(str(logo_path)))
+            
             self.core = IOSToolCore(log_callback=self._log_from_core)
             self.worker = None
             
@@ -1047,32 +1130,44 @@ def run_gui():
             main_layout.setSpacing(0)
             
             # Space background
-            self.space_bg = UniverseWidget(central)
+            self.space_bg = GrokSpaceWidget(central)
             self.space_bg.setGeometry(central.rect())
             
             # Content overlay
             content = QWidget(central)
             content_layout = QVBoxLayout(content)
-            content_layout.setContentsMargins(40, 30, 40, 30)
-            content_layout.setSpacing(20)
+            content_layout.setContentsMargins(50, 25, 50, 35)
+            content_layout.setSpacing(15)
             
             # Title section
             title_container = QWidget()
             title_layout = QVBoxLayout(title_container)
-            title_layout.setSpacing(8)
-            title_layout.setContentsMargins(0, 20, 0, 20)
+            title_layout.setSpacing(6)
+            title_layout.setContentsMargins(0, 15, 0, 25)
             
             title = QLabel("IOS TOOLS")
             title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            title.setFont(QFont("SF Pro Display", 42, QFont.Weight.Light))
-            title.setStyleSheet("color: white; background: transparent; letter-spacing: 2px;")
+            title.setFont(QFont("SF Pro Display", 46, QFont.Weight.ExtraLight))
+            title.setStyleSheet("""
+                color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 rgba(220, 220, 255, 1),
+                    stop:0.5 rgba(255, 255, 255, 1),
+                    stop:1 rgba(200, 210, 255, 1));
+                background: transparent;
+                letter-spacing: 8px;
+            """)
             title_layout.addWidget(title)
             
             # Animated subtitle
             self.subtitle = QLabel("Build from the Universe_")
             self.subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.subtitle.setFont(QFont("SF Mono", 14))
-            self.subtitle.setStyleSheet("color: rgba(255,255,255,0.5); background: transparent; letter-spacing: 3px;")
+            self.subtitle.setFont(QFont("SF Mono", 13))
+            self.subtitle.setStyleSheet("""
+                color: rgba(160, 170, 200, 0.6);
+                background: transparent;
+                letter-spacing: 4px;
+                margin-top: 5px;
+            """)
             title_layout.addWidget(self.subtitle)
             
             # Cursor blink animation
@@ -1100,27 +1195,37 @@ def run_gui():
             log_layout.setContentsMargins(0, 10, 0, 0)
             
             log_header = QHBoxLayout()
-            log_label = QLabel("Console")
-            log_label.setFont(QFont("SF Pro Display", 12, QFont.Weight.Medium))
-            log_label.setStyleSheet("color: rgba(255,255,255,0.6); background: transparent;")
+            log_label = QLabel("   Console")
+            log_label.setFont(QFont("SF Mono", 11, QFont.Weight.Medium))
+            log_label.setStyleSheet("""
+                color: rgba(140, 150, 180, 0.7);
+                background: transparent;
+                letter-spacing: 1px;
+            """)
             log_header.addWidget(log_label)
             
             log_header.addStretch()
             
             clear_btn = QPushButton("Clear")
-            clear_btn.setFixedWidth(80)
+            clear_btn.setFixedWidth(75)
+            clear_btn.setFixedHeight(28)
+            clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             clear_btn.clicked.connect(lambda: self.log_text.clear())
             clear_btn.setStyleSheet("""
                 QPushButton {
-                    background: rgba(255,255,255,0.1);
-                    border: 1px solid rgba(255,255,255,0.2);
-                    border-radius: 6px;
-                    color: rgba(255,255,255,0.7);
-                    padding: 5px 15px;
-                    font-size: 11px;
+                    background: rgba(255,255,255,0.05);
+                    border: 1px solid rgba(255,255,255,0.1);
+                    border-radius: 8px;
+                    color: rgba(255,255,255,0.5);
+                    padding: 4px 12px;
+                    font-size: 10px;
+                    font-weight: 500;
+                    letter-spacing: 0.5px;
                 }
                 QPushButton:hover {
-                    background: rgba(255,255,255,0.15);
+                    background: rgba(255,255,255,0.1);
+                    color: rgba(255,255,255,0.8);
+                    border: 1px solid rgba(255,255,255,0.15);
                 }
             """)
             log_header.addWidget(clear_btn)
@@ -1149,7 +1254,7 @@ def run_gui():
         def _blink_cursor(self):
             """Blink the cursor in subtitle."""
             self.cursor_visible = not self.cursor_visible
-            base_text = "Build the Universe"
+            base_text = "Build from the Universe"
             if self.cursor_visible:
                 self.subtitle.setText(base_text + "_")
             else:
@@ -1160,10 +1265,10 @@ def run_gui():
             self.space_bg.setGeometry(self.centralWidget().rect())
         
         def _create_grok_button(self, text: str, primary: bool = False, icon: str = "") -> QPushButton:
-            """Create a premium Grok-style button with glow effects."""
+            """Create a premium Grok-style button with aurora glow effects."""
             display_text = f"{icon}  {text}" if icon else text
             btn = QPushButton(display_text)
-            btn.setMinimumHeight(52)
+            btn.setMinimumHeight(54)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setFont(QFont("SF Pro Display", 13, QFont.Weight.DemiBold))
             
@@ -1171,56 +1276,70 @@ def run_gui():
                 btn.setStyleSheet("""
                     QPushButton {
                         background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                            stop:0 rgba(120, 120, 255, 0.25),
-                            stop:0.5 rgba(180, 120, 255, 0.20),
-                            stop:1 rgba(120, 180, 255, 0.25));
-                        border: 1px solid rgba(255, 255, 255, 0.3);
-                        border-radius: 14px;
+                            stop:0 rgba(80, 100, 200, 0.35),
+                            stop:0.3 rgba(120, 80, 180, 0.30),
+                            stop:0.7 rgba(160, 100, 220, 0.30),
+                            stop:1 rgba(100, 140, 220, 0.35));
+                        border: 1px solid rgba(180, 180, 255, 0.25);
+                        border-top: 1px solid rgba(200, 200, 255, 0.35);
+                        border-radius: 16px;
                         color: white;
-                        padding: 14px 35px;
+                        padding: 15px 40px;
                         font-weight: 600;
-                        letter-spacing: 0.5px;
+                        font-size: 14px;
+                        letter-spacing: 0.8px;
                     }
                     QPushButton:hover {
                         background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                            stop:0 rgba(140, 140, 255, 0.35),
-                            stop:0.5 rgba(200, 140, 255, 0.30),
-                            stop:1 rgba(140, 200, 255, 0.35));
-                        border: 1px solid rgba(255, 255, 255, 0.5);
+                            stop:0 rgba(100, 120, 220, 0.45),
+                            stop:0.3 rgba(140, 100, 200, 0.40),
+                            stop:0.7 rgba(180, 120, 240, 0.40),
+                            stop:1 rgba(120, 160, 240, 0.45));
+                        border: 1px solid rgba(200, 200, 255, 0.4);
+                        border-top: 1px solid rgba(220, 220, 255, 0.5);
                     }
                     QPushButton:pressed {
                         background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                            stop:0 rgba(100, 100, 200, 0.4),
-                            stop:1 rgba(100, 150, 200, 0.4));
-                        border: 1px solid rgba(255, 255, 255, 0.2);
+                            stop:0 rgba(70, 90, 180, 0.5),
+                            stop:1 rgba(90, 130, 200, 0.5));
+                        border: 1px solid rgba(150, 150, 255, 0.3);
+                        padding-top: 16px;
+                        padding-bottom: 14px;
                     }
                     QPushButton:disabled {
-                        background: rgba(255, 255, 255, 0.05);
-                        border: 1px solid rgba(255, 255, 255, 0.1);
-                        color: rgba(255, 255, 255, 0.25);
+                        background: rgba(40, 40, 60, 0.4);
+                        border: 1px solid rgba(255, 255, 255, 0.08);
+                        color: rgba(255, 255, 255, 0.2);
                     }
                 """)
             else:
                 btn.setStyleSheet("""
                     QPushButton {
                         background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                            stop:0 rgba(255, 255, 255, 0.1),
-                            stop:1 rgba(255, 255, 255, 0.05));
-                        border: 1px solid rgba(255, 255, 255, 0.18);
-                        border-radius: 12px;
+                            stop:0 rgba(50, 50, 70, 0.8),
+                            stop:1 rgba(35, 35, 50, 0.85));
+                        border: 1px solid rgba(255, 255, 255, 0.12);
+                        border-top: 1px solid rgba(255, 255, 255, 0.18);
+                        border-radius: 14px;
                         color: rgba(255, 255, 255, 0.9);
-                        padding: 12px 24px;
+                        padding: 12px 26px;
                         font-weight: 500;
+                        font-size: 12px;
                     }
                     QPushButton:hover {
                         background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                            stop:0 rgba(255, 255, 255, 0.18),
-                            stop:1 rgba(255, 255, 255, 0.10));
-                        border: 1px solid rgba(255, 255, 255, 0.28);
+                            stop:0 rgba(65, 65, 90, 0.9),
+                            stop:1 rgba(50, 50, 70, 0.92));
+                        border: 1px solid rgba(255, 255, 255, 0.22);
+                        border-top: 1px solid rgba(255, 255, 255, 0.28);
                         color: white;
                     }
                     QPushButton:pressed {
-                        background: rgba(255, 255, 255, 0.08);
+                        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                            stop:0 rgba(40, 40, 55, 0.9),
+                            stop:1 rgba(30, 30, 45, 0.95));
+                        padding-top: 13px;
+                        padding-bottom: 11px;
                     }
                 """)
             
@@ -1235,10 +1354,17 @@ def run_gui():
             return inp
         
         def _create_section_label(self, text: str) -> QLabel:
-            """Create a section label."""
+            """Create a section label with subtle styling."""
             label = QLabel(text)
-            label.setFont(QFont("SF Pro Display", 11, QFont.Weight.Medium))
-            label.setStyleSheet("color: rgba(255,255,255,0.5); background: transparent; margin-top: 10px;")
+            label.setFont(QFont("SF Pro Display", 10, QFont.Weight.Medium))
+            label.setStyleSheet("""
+                color: rgba(180, 190, 255, 0.6);
+                background: transparent;
+                margin-top: 12px;
+                margin-bottom: 4px;
+                padding-left: 4px;
+                letter-spacing: 1.5px;
+            """)
             return label
         
         def _create_app2ipa_tab(self):
@@ -1530,92 +1656,129 @@ def run_gui():
                     color: #FFFFFF;
                 }
                 QTabWidget::pane {
-                    background: rgba(0, 0, 0, 0.4);
-                    border: 1px solid rgba(255, 255, 255, 0.1);
-                    border-radius: 15px;
+                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                        stop:0 rgba(20, 20, 35, 0.85),
+                        stop:1 rgba(10, 10, 20, 0.9));
+                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    border-top: 1px solid rgba(255, 255, 255, 0.15);
+                    border-radius: 20px;
+                    padding: 5px;
+                }
+                QTabBar {
+                    background: transparent;
                 }
                 QTabBar::tab {
-                    background: transparent;
-                    color: rgba(255, 255, 255, 0.5);
-                    padding: 12px 30px;
-                    margin-right: 5px;
-                    border: none;
-                    font-size: 13px;
+                    background: rgba(255, 255, 255, 0.03);
+                    color: rgba(255, 255, 255, 0.45);
+                    padding: 10px 28px;
+                    margin: 4px 3px 8px 3px;
+                    border: 1px solid transparent;
+                    border-radius: 12px;
+                    font-size: 12px;
                     font-weight: 500;
+                    letter-spacing: 0.3px;
                 }
                 QTabBar::tab:selected {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                        stop:0 rgba(100, 120, 255, 0.25),
+                        stop:1 rgba(150, 100, 255, 0.2));
                     color: white;
-                    border-bottom: 2px solid white;
+                    border: 1px solid rgba(255, 255, 255, 0.15);
                 }
                 QTabBar::tab:hover:!selected {
-                    color: rgba(255, 255, 255, 0.7);
+                    background: rgba(255, 255, 255, 0.08);
+                    color: rgba(255, 255, 255, 0.75);
+                    border: 1px solid rgba(255, 255, 255, 0.05);
                 }
                 QLineEdit {
-                    background: rgba(255, 255, 255, 0.08);
-                    border: 1px solid rgba(255, 255, 255, 0.15);
-                    border-radius: 10px;
-                    padding: 12px 18px;
-                    color: white;
+                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                        stop:0 rgba(30, 30, 45, 0.9),
+                        stop:1 rgba(20, 20, 35, 0.95));
+                    border: 1px solid rgba(255, 255, 255, 0.1);
+                    border-top: 1px solid rgba(255, 255, 255, 0.15);
+                    border-radius: 14px;
+                    padding: 14px 20px;
+                    color: rgba(255, 255, 255, 0.95);
                     font-size: 13px;
-                    selection-background-color: rgba(255, 255, 255, 0.3);
+                    selection-background-color: rgba(100, 150, 255, 0.4);
                 }
                 QLineEdit:focus {
-                    border: 1px solid rgba(255, 255, 255, 0.35);
-                    background: rgba(255, 255, 255, 0.1);
+                    border: 1px solid rgba(130, 150, 255, 0.5);
+                    border-top: 1px solid rgba(130, 150, 255, 0.6);
+                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                        stop:0 rgba(35, 35, 55, 0.95),
+                        stop:1 rgba(25, 25, 40, 0.98));
                 }
                 QLineEdit::placeholder {
-                    color: rgba(255, 255, 255, 0.35);
+                    color: rgba(255, 255, 255, 0.3);
                 }
                 QTextEdit {
-                    background: rgba(0, 0, 0, 0.5);
-                    border: 1px solid rgba(255, 255, 255, 0.1);
-                    border-radius: 10px;
-                    padding: 12px;
-                    color: #CCC;
-                    font-family: 'Consolas', 'Monaco', 'SF Mono', monospace;
+                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                        stop:0 rgba(10, 10, 18, 0.95),
+                        stop:1 rgba(5, 5, 12, 0.98));
+                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    border-top: 1px solid rgba(255, 255, 255, 0.12);
+                    border-radius: 14px;
+                    padding: 14px;
+                    color: rgba(200, 200, 210, 0.9);
+                    font-family: 'JetBrains Mono', 'Cascadia Code', 'Consolas', monospace;
                     font-size: 11px;
+                    line-height: 1.4;
                 }
                 QScrollBar:vertical {
-                    background: transparent;
-                    width: 8px;
-                    border-radius: 4px;
+                    background: rgba(255, 255, 255, 0.02);
+                    width: 6px;
+                    border-radius: 3px;
+                    margin: 4px 2px;
                 }
                 QScrollBar::handle:vertical {
-                    background: rgba(255, 255, 255, 0.2);
-                    border-radius: 4px;
-                    min-height: 30px;
+                    background: rgba(255, 255, 255, 0.15);
+                    border-radius: 3px;
+                    min-height: 40px;
                 }
                 QScrollBar::handle:vertical:hover {
-                    background: rgba(255, 255, 255, 0.3);
+                    background: rgba(255, 255, 255, 0.25);
                 }
                 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
                     height: 0;
                 }
+                QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                    background: transparent;
+                }
                 QProgressBar {
-                    background: rgba(255, 255, 255, 0.1);
+                    background: rgba(255, 255, 255, 0.08);
                     border: none;
-                    border-radius: 1px;
+                    border-radius: 2px;
                 }
                 QProgressBar::chunk {
-                    background: rgba(255, 255, 255, 0.6);
-                    border-radius: 1px;
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                        stop:0 rgba(100, 150, 255, 0.8),
+                        stop:1 rgba(180, 100, 255, 0.8));
+                    border-radius: 2px;
                 }
                 QMessageBox {
-                    background: #1a1a1a;
+                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                        stop:0 #1e1e2e, stop:1 #121218);
                 }
                 QMessageBox QLabel {
-                    color: white;
+                    color: rgba(255, 255, 255, 0.9);
                 }
                 QMessageBox QPushButton {
-                    background: rgba(255, 255, 255, 0.1);
-                    border: 1px solid rgba(255, 255, 255, 0.2);
-                    border-radius: 8px;
+                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                        stop:0 rgba(60, 60, 80, 0.9),
+                        stop:1 rgba(40, 40, 60, 0.95));
+                    border: 1px solid rgba(255, 255, 255, 0.15);
+                    border-radius: 10px;
                     color: white;
-                    padding: 8px 20px;
-                    min-width: 80px;
+                    padding: 10px 24px;
+                    min-width: 90px;
+                    font-weight: 500;
                 }
                 QMessageBox QPushButton:hover {
-                    background: rgba(255, 255, 255, 0.15);
+                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                        stop:0 rgba(80, 80, 100, 0.95),
+                        stop:1 rgba(60, 60, 80, 0.98));
+                    border: 1px solid rgba(255, 255, 255, 0.25);
                 }
             """)
     
@@ -1635,6 +1798,10 @@ def run_gui():
     palette.setColor(QPalette.ColorRole.Highlight, QColor(80, 80, 80))
     palette.setColor(QPalette.ColorRole.HighlightedText, QColor(255, 255, 255))
     app.setPalette(palette)
+    
+    # Set application icon (for taskbar)
+    if logo_path.exists():
+        app.setWindowIcon(QIcon(str(logo_path)))
     
     window = IOSToolGUI()
     window.show()

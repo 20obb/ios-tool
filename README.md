@@ -319,7 +319,7 @@ The GUI features a stunning Grok AI-style interface with:
 
 ```bash
 # Clone the repository
-git clone https://github.com/20obb/ios-tool.git
+git clone https://github.com/yourusername/ios-tool.git
 cd ios-tool
 
 # Install dependencies
@@ -334,4 +334,3 @@ pytest
 ## 📄 License
 
 MIT License - Feel free to use, modify, and distribute!
-
