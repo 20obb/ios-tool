@@ -577,6 +577,37 @@ BSD-specific:
             "--hidden-import", "typer",
         ])
         
+        # Add logo icon for the executable
+        logo_file = script.parent / "logo.jpg"
+        logo_ico = script.parent / "logo.ico"
+        
+        # Try to use .ico file if it exists, otherwise convert jpg to ico
+        if logo_ico.exists():
+            cmd.extend(["--icon", str(logo_ico)])
+            self.log(f"[>] Using icon: {logo_ico}")
+        elif logo_file.exists():
+            # Try to convert jpg to ico using PIL if available
+            try:
+                from PIL import Image
+                img = Image.open(logo_file)
+                # Create multiple sizes for better icon quality
+                img.save(logo_ico, format='ICO', sizes=[(256, 256), (128, 128), (64, 64), (48, 48), (32, 32), (16, 16)])
+                cmd.extend(["--icon", str(logo_ico)])
+                self.log(f"[>] Created icon: {logo_ico}")
+            except ImportError:
+                self.log("[!] PIL not installed - using jpg directly (may not work on all platforms)", "warning")
+                cmd.extend(["--icon", str(logo_file)])
+            except Exception as e:
+                self.log(f"[!] Could not convert logo: {e}", "warning")
+        
+        # Bundle logo.jpg as data file for runtime use
+        if logo_file.exists():
+            if system == "windows":
+                cmd.extend(["--add-data", f"{logo_file};."])
+            else:
+                cmd.extend(["--add-data", f"{logo_file}:."])
+            self.log(f"[>] Bundling: {logo_file.name}")
+        
         cmd.append(str(script))
         
         self.log(f"[*] Running: {' '.join(cmd)}")
@@ -814,9 +845,19 @@ def run_gui():
         print("Install with: pip install PyQt6")
         sys.exit(1)
     
-    # Get logo path
-    script_dir = Path(__file__).parent
-    logo_path = script_dir / "logo.jpg"
+    # Get logo path - support both development and PyInstaller bundled modes
+    def get_resource_path(filename: str) -> Path:
+        """Get path to resource file, works for dev and PyInstaller bundle."""
+        if getattr(sys, 'frozen', False):
+            # Running as compiled executable
+            base_path = Path(sys._MEIPASS)
+        else:
+            # Running as script
+            base_path = Path(__file__).parent
+        return base_path / filename
+    
+    script_dir = Path(__file__).parent if not getattr(sys, 'frozen', False) else Path(sys._MEIPASS)
+    logo_path = get_resource_path("logo.jpg")
     
     # ============ Grok-style Milky Way Background ============
     @dataclass
@@ -1147,21 +1188,18 @@ def run_gui():
             
             title = QLabel("IOS TOOLS")
             title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            title.setFont(QFont("SF Pro Display", 46, QFont.Weight.ExtraLight))
+            title.setFont(QFont("Cairo", 42, QFont.Weight.ExtraLight))
             title.setStyleSheet("""
-                color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 rgba(220, 220, 255, 1),
-                    stop:0.5 rgba(255, 255, 255, 1),
-                    stop:1 rgba(200, 210, 255, 1));
+                color: white;
                 background: transparent;
-                letter-spacing: 8px;
+                letter-spacing: 12px;
             """)
             title_layout.addWidget(title)
             
             # Animated subtitle
             self.subtitle = QLabel("Build from the Universe_")
             self.subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.subtitle.setFont(QFont("SF Mono", 13))
+            self.subtitle.setFont(QFont("Cairo", 12))
             self.subtitle.setStyleSheet("""
                 color: rgba(160, 170, 200, 0.6);
                 background: transparent;
@@ -1196,7 +1234,7 @@ def run_gui():
             
             log_header = QHBoxLayout()
             log_label = QLabel("   Console")
-            log_label.setFont(QFont("SF Mono", 11, QFont.Weight.Medium))
+            log_label.setFont(QFont("Cairo", 10, QFont.Weight.Medium))
             log_label.setStyleSheet("""
                 color: rgba(140, 150, 180, 0.7);
                 background: transparent;
@@ -1265,61 +1303,65 @@ def run_gui():
             self.space_bg.setGeometry(self.centralWidget().rect())
         
         def _create_grok_button(self, text: str, primary: bool = False, icon: str = "") -> QPushButton:
-            """Create a premium Grok-style button with aurora glow effects."""
+            """Create a glassy frosted button with Cairo font."""
             display_text = f"{icon}  {text}" if icon else text
             btn = QPushButton(display_text)
             btn.setMinimumHeight(54)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setFont(QFont("SF Pro Display", 13, QFont.Weight.DemiBold))
+            btn.setFont(QFont("Cairo", 12, QFont.Weight.DemiBold))
             
             if primary:
                 btn.setStyleSheet("""
                     QPushButton {
-                        background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                            stop:0 rgba(80, 100, 200, 0.35),
-                            stop:0.3 rgba(120, 80, 180, 0.30),
-                            stop:0.7 rgba(160, 100, 220, 0.30),
-                            stop:1 rgba(100, 140, 220, 0.35));
-                        border: 1px solid rgba(180, 180, 255, 0.25);
-                        border-top: 1px solid rgba(200, 200, 255, 0.35);
+                        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                            stop:0 rgba(255, 255, 255, 0.18),
+                            stop:0.4 rgba(255, 255, 255, 0.08),
+                            stop:0.6 rgba(200, 210, 255, 0.06),
+                            stop:1 rgba(180, 190, 255, 0.12));
+                        border: 1px solid rgba(255, 255, 255, 0.35);
+                        border-top: 1px solid rgba(255, 255, 255, 0.5);
+                        border-left: 1px solid rgba(255, 255, 255, 0.4);
                         border-radius: 16px;
                         color: white;
                         padding: 15px 40px;
                         font-weight: 600;
                         font-size: 14px;
-                        letter-spacing: 0.8px;
+                        letter-spacing: 0.5px;
                     }
                     QPushButton:hover {
-                        background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                            stop:0 rgba(100, 120, 220, 0.45),
-                            stop:0.3 rgba(140, 100, 200, 0.40),
-                            stop:0.7 rgba(180, 120, 240, 0.40),
-                            stop:1 rgba(120, 160, 240, 0.45));
-                        border: 1px solid rgba(200, 200, 255, 0.4);
-                        border-top: 1px solid rgba(220, 220, 255, 0.5);
+                        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                            stop:0 rgba(255, 255, 255, 0.28),
+                            stop:0.4 rgba(255, 255, 255, 0.15),
+                            stop:0.6 rgba(220, 225, 255, 0.12),
+                            stop:1 rgba(200, 210, 255, 0.18));
+                        border: 1px solid rgba(255, 255, 255, 0.5);
+                        border-top: 1px solid rgba(255, 255, 255, 0.65);
+                        border-left: 1px solid rgba(255, 255, 255, 0.55);
                     }
                     QPushButton:pressed {
-                        background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                            stop:0 rgba(70, 90, 180, 0.5),
-                            stop:1 rgba(90, 130, 200, 0.5));
-                        border: 1px solid rgba(150, 150, 255, 0.3);
+                        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                            stop:0 rgba(255, 255, 255, 0.1),
+                            stop:1 rgba(180, 190, 255, 0.15));
+                        border: 1px solid rgba(255, 255, 255, 0.25);
                         padding-top: 16px;
                         padding-bottom: 14px;
                     }
                     QPushButton:disabled {
-                        background: rgba(40, 40, 60, 0.4);
-                        border: 1px solid rgba(255, 255, 255, 0.08);
-                        color: rgba(255, 255, 255, 0.2);
+                        background: rgba(255, 255, 255, 0.05);
+                        border: 1px solid rgba(255, 255, 255, 0.1);
+                        color: rgba(255, 255, 255, 0.25);
                     }
                 """)
             else:
                 btn.setStyleSheet("""
                     QPushButton {
                         background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                            stop:0 rgba(50, 50, 70, 0.8),
-                            stop:1 rgba(35, 35, 50, 0.85));
-                        border: 1px solid rgba(255, 255, 255, 0.12);
-                        border-top: 1px solid rgba(255, 255, 255, 0.18);
+                            stop:0 rgba(255, 255, 255, 0.12),
+                            stop:0.5 rgba(255, 255, 255, 0.05),
+                            stop:1 rgba(255, 255, 255, 0.08));
+                        border: 1px solid rgba(255, 255, 255, 0.2);
+                        border-top: 1px solid rgba(255, 255, 255, 0.3);
+                        border-left: 1px solid rgba(255, 255, 255, 0.25);
                         border-radius: 14px;
                         color: rgba(255, 255, 255, 0.9);
                         padding: 12px 26px;
@@ -1328,16 +1370,17 @@ def run_gui():
                     }
                     QPushButton:hover {
                         background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                            stop:0 rgba(65, 65, 90, 0.9),
-                            stop:1 rgba(50, 50, 70, 0.92));
-                        border: 1px solid rgba(255, 255, 255, 0.22);
-                        border-top: 1px solid rgba(255, 255, 255, 0.28);
+                            stop:0 rgba(255, 255, 255, 0.2),
+                            stop:0.5 rgba(255, 255, 255, 0.1),
+                            stop:1 rgba(255, 255, 255, 0.14));
+                        border: 1px solid rgba(255, 255, 255, 0.35);
+                        border-top: 1px solid rgba(255, 255, 255, 0.45);
                         color: white;
                     }
                     QPushButton:pressed {
                         background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                            stop:0 rgba(40, 40, 55, 0.9),
-                            stop:1 rgba(30, 30, 45, 0.95));
+                            stop:0 rgba(255, 255, 255, 0.06),
+                            stop:1 rgba(255, 255, 255, 0.1));
                         padding-top: 13px;
                         padding-bottom: 11px;
                     }
@@ -1346,17 +1389,17 @@ def run_gui():
             return btn
         
         def _create_grok_input(self, placeholder: str) -> QLineEdit:
-            """Create a Grok-style input field."""
+            """Create a glassy input field with Cairo font."""
             inp = QLineEdit()
             inp.setPlaceholderText(placeholder)
-            inp.setMinimumHeight(45)
-            inp.setFont(QFont("SF Pro Display", 12))
+            inp.setMinimumHeight(48)
+            inp.setFont(QFont("Cairo", 11))
             return inp
         
         def _create_section_label(self, text: str) -> QLabel:
             """Create a section label with subtle styling."""
             label = QLabel(text)
-            label.setFont(QFont("SF Pro Display", 10, QFont.Weight.Medium))
+            label.setFont(QFont("Cairo", 9, QFont.Weight.Medium))
             label.setStyleSheet("""
                 color: rgba(180, 190, 255, 0.6);
                 background: transparent;
@@ -1490,7 +1533,8 @@ def run_gui():
             
             # Info
             info = QLabel("Requires Theos or clang with iOS SDK")
-            info.setStyleSheet("color: rgba(255,255,255,0.4); background: transparent; font-size: 11px;")
+            info.setFont(QFont("Cairo", 9))
+            info.setStyleSheet("color: rgba(255,255,255,0.4); background: transparent;")
             info.setAlignment(Qt.AlignmentFlag.AlignCenter)
             layout.addWidget(info)
             
@@ -1504,13 +1548,14 @@ def run_gui():
             layout.setContentsMargins(20, 20, 20, 20)
             
             # Header
-            header = QLabel("[>] Compile Standalone Executable")
-            header.setFont(QFont("SF Pro Display", 14, QFont.Weight.DemiBold))
+            header = QLabel("Compile Standalone Executable")
+            header.setFont(QFont("Cairo", 14, QFont.Weight.DemiBold))
             header.setStyleSheet("color: rgba(255,255,255,0.9); background: transparent;")
             layout.addWidget(header)
             
             desc = QLabel("Create standalone binaries for Windows (.exe), Linux, macOS, and BSD")
-            desc.setStyleSheet("color: rgba(255,255,255,0.5); background: transparent; font-size: 12px;")
+            desc.setFont(QFont("Cairo", 10))
+            desc.setStyleSheet("color: rgba(255,255,255,0.5); background: transparent;")
             layout.addWidget(desc)
             
             layout.addSpacing(15)
@@ -1534,14 +1579,15 @@ def run_gui():
             elif current_arch.lower() in ["armv7l", "armv7"]:
                 arch_display = "ARM (32-bit)"
             
-            os_info = QLabel(f"[*] Current Platform: {current_os} / {arch_display}")
-            os_info.setStyleSheet("color: rgba(120,180,255,0.8); background: transparent; font-size: 12px; margin-top: 10px;")
+            os_info = QLabel(f"Current Platform: {current_os} / {arch_display}")
+            os_info.setFont(QFont("Cairo", 10))
+            os_info.setStyleSheet("color: rgba(120,180,255,0.8); background: transparent; margin-top: 10px;")
             layout.addWidget(os_info)
             
             layout.addSpacing(25)
             
             # Compile button
-            self.compile_btn = self._create_grok_button("[>] Compile Binary", primary=True)
+            self.compile_btn = self._create_grok_button("Compile Binary", primary=True)
             self.compile_btn.clicked.connect(self._run_compile)
             layout.addWidget(self.compile_btn)
             
@@ -1554,7 +1600,8 @@ def run_gui():
                 "  BSD:      ios_tool-bsd-amd64     |  ios_tool-bsd-arm64\n\n"
                 "Requires: pip install pyinstaller"
             )
-            notes.setStyleSheet("color: rgba(255,255,255,0.4); background: transparent; font-size: 11px; margin-top: 15px;")
+            notes.setFont(QFont("Cairo", 9))
+            notes.setStyleSheet("color: rgba(255,255,255,0.4); background: transparent; margin-top: 15px;")
             layout.addWidget(notes)
             
             layout.addStretch()
@@ -1642,7 +1689,7 @@ def run_gui():
             
             self._set_busy(True, self.compile_btn)
             
-            self.worker = WorkerThread(self.core.compile_binary, None, output_name, None, True)
+            self.worker = WorkerThread(self.core.compile_binary, None, output_name, None, None, True)
             self.worker.finished.connect(lambda s, r: self._on_finished(s, r, self.compile_btn))
             self.worker.start()
         
