@@ -711,6 +711,147 @@ Cross-compilation Notes:
 
 
 # ============================================================================
+# Signing Module Integration (Optional Extension)
+# ============================================================================
+
+def _check_signing_available() -> tuple[bool, str]:
+    """Check if signing module is available."""
+    try:
+        from signing import is_available, get_signing_info
+        if is_available():
+            return True, "Signing module available"
+        else:
+            info = get_signing_info()
+            missing = [k for k, v in info["dependencies"].items() if not v]
+            return False, f"Missing dependencies: {', '.join(missing)}"
+    except ImportError:
+        return False, "Signing module not found"
+
+
+def _get_signing_install_instructions() -> str:
+    """Get signing module installation instructions."""
+    return """
+IPA Signing Module - Installation
+==================================
+
+To enable IPA signing features, install dependencies:
+
+    pip install cryptography pyOpenSSL
+
+For Apple ID (weekly) signing, also install:
+
+    pip install requests
+
+Signing Methods Available:
+1. Annual Signing - Uses .p12 + mobileprovision (1 year validity)
+2. Weekly Signing - Uses free Apple ID (7 days validity)
+
+After installation, use:
+    ios_tool sign-annual --help
+    ios_tool sign-weekly --help
+"""
+
+
+# ============================================================================
+# Device Module Integration (Optional Extension)
+# ============================================================================
+
+def _check_device_available() -> tuple[bool, str]:
+    """Check if device module is available."""
+    try:
+        from device import is_available
+        available, msg = is_available()
+        if available:
+            # Also check if detection is supported on this platform
+            from device.detection import DeviceDetector
+            detector = DeviceDetector()
+            if detector.is_supported():
+                return True, "Device detection available"
+            else:
+                return False, detector.get_status_message()
+        return False, msg
+    except ImportError:
+        return False, "Device module not found"
+
+
+def _get_device_install_instructions() -> str:
+    """Get device module installation instructions."""
+    import platform
+    system = platform.system().lower()
+    
+    instructions = """
+iOS Device Module - Installation
+=================================
+
+"""
+    
+    if system == "windows":
+        instructions += """Windows Requirements:
+--------------------
+Option 1: iTunes (Recommended)
+  • Download iTunes from apple.com (NOT Microsoft Store version)
+  • URL: https://www.apple.com/itunes/download/win64
+  • Includes Apple Mobile Device Support
+
+Option 2: libimobiledevice
+  • Install via Chocolatey: choco install libimobiledevice
+  • Or download from: https://github.com/libimobiledevice-win32
+
+IMPORTANT: Microsoft Store version of iTunes does NOT work!
+"""
+    
+    elif system == "darwin":
+        instructions += """macOS Requirements:
+------------------
+Install libimobiledevice via Homebrew:
+
+    brew install libimobiledevice ideviceinstaller
+
+Or use Xcode Command Line Tools:
+
+    xcode-select --install
+"""
+    
+    elif system == "linux":
+        instructions += """Linux Requirements:
+------------------
+Install libimobiledevice:
+
+  Ubuntu/Debian:
+    sudo apt install libimobiledevice6 libimobiledevice-utils ideviceinstaller usbmuxd
+
+  Fedora/RHEL:
+    sudo dnf install libimobiledevice libimobiledevice-utils ideviceinstaller usbmuxd
+
+  Arch Linux:
+    sudo pacman -S libimobiledevice ideviceinstaller usbmuxd
+
+Start usbmuxd service:
+    sudo systemctl start usbmuxd
+    sudo systemctl enable usbmuxd
+"""
+    
+    else:
+        instructions += """BSD Requirements:
+----------------
+Install libimobiledevice:
+
+    pkg install libimobiledevice
+
+Note: BSD support may be limited.
+"""
+    
+    instructions += """
+Available Commands:
+  ios_tool device-detect   - Detect connected devices
+  ios_tool device-install  - Install IPA to device
+  ios_tool device-info     - Show platform support status
+"""
+    
+    return instructions
+
+
+# ============================================================================
 # CLI Interface
 # ============================================================================
 
@@ -803,6 +944,277 @@ def run_cli():
         """Launch the graphical user interface."""
         run_gui()
     
+    # =========================================================================
+    # Signing Commands (Optional Extension)
+    # =========================================================================
+    
+    @cli_app.command("sign-annual")
+    def cmd_sign_annual(
+        input_ipa: str = Argument(..., help="Path to IPA file to sign"),
+        p12: str = Option(..., "--p12", "-p", help="Path to .p12 certificate file"),
+        provision: str = Option(..., "--provision", "-m", help="Path to .mobileprovision file"),
+        password: str = Option("", "--password", "-w", help="P12 password (empty if none)"),
+        output: Optional[str] = Option(None, "-o", "--output", help="Output IPA path"),
+        bundle_id: Optional[str] = Option(None, "-b", "--bundle-id", help="Override bundle ID"),
+    ) -> None:
+        """Sign IPA with Apple Developer Certificate (valid for 1 year)."""
+        available, msg = _check_signing_available()
+        if not available:
+            typer.secho(f"Signing not available: {msg}", fg=typer.colors.RED, err=True)
+            typer.echo(_get_signing_install_instructions())
+            raise typer.Exit(code=1)
+        
+        try:
+            from signing.annual import AnnualSigner
+            
+            typer.secho("[*] Annual Signing (Developer Certificate)", fg=typer.colors.CYAN)
+            
+            signer = AnnualSigner(
+                p12_path=p12,
+                provision_path=provision,
+                p12_password=password,
+                log_callback=typer_log
+            )
+            
+            # Validate
+            valid, validate_msg = signer.validate()
+            if not valid:
+                typer.secho(f"Validation failed: {validate_msg}", fg=typer.colors.RED, err=True)
+                raise typer.Exit(code=1)
+            
+            # Sign
+            result = signer.sign_ipa(input_ipa, output, bundle_id)
+            
+            if not result.success:
+                typer.secho(f"Error: {result.message}", fg=typer.colors.RED, err=True)
+                raise typer.Exit(code=1)
+            
+            typer.secho(f"[+] Signed IPA: {result.output_path}", fg=typer.colors.GREEN)
+            
+        except ImportError as e:
+            typer.secho(f"Import error: {e}", fg=typer.colors.RED, err=True)
+            typer.echo(_get_signing_install_instructions())
+            raise typer.Exit(code=1)
+    
+    @cli_app.command("sign-weekly")
+    def cmd_sign_weekly(
+        input_ipa: str = Argument(..., help="Path to IPA file to sign"),
+        apple_id: str = Option(..., "--apple-id", "-a", help="Apple ID email"),
+        password: str = Option(..., "--password", "-w", help="Apple ID password"),
+        udid: str = Option(..., "--udid", "-u", help="Target device UDID"),
+        code: Optional[str] = Option(None, "--2fa", "-c", help="Two-factor auth code"),
+        output: Optional[str] = Option(None, "-o", "--output", help="Output IPA path"),
+        bundle_id: Optional[str] = Option(None, "-b", "--bundle-id", help="Override bundle ID"),
+    ) -> None:
+        """Sign IPA with Apple ID for sideloading (valid for 7 days)."""
+        available, msg = _check_signing_available()
+        if not available:
+            typer.secho(f"Signing not available: {msg}", fg=typer.colors.RED, err=True)
+            typer.echo(_get_signing_install_instructions())
+            raise typer.Exit(code=1)
+        
+        try:
+            from signing.weekly import WeeklySigner, TwoFactorRequired
+            
+            typer.secho("[*] Weekly Signing (Apple ID - 7 Days)", fg=typer.colors.CYAN)
+            
+            signer = WeeklySigner(log_callback=typer_log)
+            
+            # Authenticate
+            try:
+                success, auth_msg = signer.authenticate(apple_id, password, code)
+            except TwoFactorRequired:
+                typer.secho("[!] Two-factor authentication required", fg=typer.colors.YELLOW)
+                typer.echo("Please run again with --2fa <code> option")
+                raise typer.Exit(code=2)
+            
+            if not success:
+                typer.secho(f"Authentication failed: {auth_msg}", fg=typer.colors.RED, err=True)
+                raise typer.Exit(code=1)
+            
+            # Sign
+            result = signer.sign_ipa(input_ipa, output, udid, bundle_id)
+            
+            if not result.success:
+                typer.secho(f"Error: {result.message}", fg=typer.colors.RED, err=True)
+                raise typer.Exit(code=1)
+            
+            typer.secho(f"[+] Signed IPA: {result.output_path}", fg=typer.colors.GREEN)
+            typer.secho("[!] Remember: Signature valid for 7 days only!", fg=typer.colors.YELLOW)
+            
+        except ImportError as e:
+            typer.secho(f"Import error: {e}", fg=typer.colors.RED, err=True)
+            typer.echo(_get_signing_install_instructions())
+            raise typer.Exit(code=1)
+    
+    @cli_app.command("sign-info")
+    def cmd_sign_info() -> None:
+        """Show signing module information and status."""
+        available, msg = _check_signing_available()
+        
+        if available:
+            typer.secho("[+] Signing Module: Available", fg=typer.colors.GREEN)
+            
+            try:
+                from signing import get_signing_info
+                info = get_signing_info()
+                
+                typer.echo(f"\nVersion: {info['version']}")
+                typer.echo("\nDependencies:")
+                for dep, status in info["dependencies"].items():
+                    status_str = "✓" if status else "✗"
+                    color = typer.colors.GREEN if status else typer.colors.RED
+                    typer.secho(f"  {dep}: {status_str}", fg=color)
+                
+                typer.echo("\nSigning Methods:")
+                for method, desc in info["methods"].items():
+                    typer.echo(f"  {method}: {desc}")
+                
+            except Exception as e:
+                typer.secho(f"Error getting info: {e}", fg=typer.colors.RED)
+        else:
+            typer.secho(f"[-] Signing Module: Not Available", fg=typer.colors.RED)
+            typer.echo(f"    Reason: {msg}")
+            typer.echo(_get_signing_install_instructions())
+    
+    # =========================================================================
+    # Device Commands (Optional Extension)
+    # =========================================================================
+    
+    @cli_app.command("device-detect")
+    def cmd_device_detect() -> None:
+        """Detect connected iOS devices."""
+        available, msg = _check_device_available()
+        if not available:
+            typer.secho(f"Device detection not available: {msg}", fg=typer.colors.YELLOW)
+            typer.echo(_get_device_install_instructions())
+            return
+        
+        try:
+            from device import get_device_manager
+            
+            manager = get_device_manager()
+            manager._log = typer_log
+            
+            devices = manager.detect_devices()
+            
+            if not devices:
+                typer.secho("No iOS devices detected", fg=typer.colors.YELLOW)
+                typer.echo("Make sure your device is:")
+                typer.echo("  • Connected via USB")
+                typer.echo("  • Unlocked and trusted")
+                return
+            
+            typer.secho(f"\n[+] Found {len(devices)} device(s):\n", fg=typer.colors.GREEN)
+            
+            for i, device in enumerate(devices, 1):
+                typer.echo(f"  {i}. {device.display_name}")
+                typer.echo(f"     UDID: {device.udid}")
+                if device.ios_version:
+                    typer.echo(f"     iOS: {device.ios_version}")
+                if device.model:
+                    typer.echo(f"     Model: {device.model}")
+                typer.echo()
+        
+        except ImportError as e:
+            typer.secho(f"Import error: {e}", fg=typer.colors.RED, err=True)
+    
+    @cli_app.command("device-install")
+    def cmd_device_install(
+        ipa_path: str = Argument(..., help="Path to IPA file to install"),
+        udid: Optional[str] = Option(None, "--udid", "-u", help="Target device UDID (auto-detect if not provided)"),
+    ) -> None:
+        """Install IPA to connected iOS device."""
+        available, msg = _check_device_available()
+        if not available:
+            typer.secho(f"Device operations not available: {msg}", fg=typer.colors.RED, err=True)
+            typer.echo(_get_device_install_instructions())
+            raise typer.Exit(code=1)
+        
+        try:
+            from device import get_device_manager
+            from device.models import InstallationStatus
+            
+            manager = get_device_manager()
+            manager._log = typer_log
+            
+            # Validate IPA
+            if not Path(ipa_path).exists():
+                typer.secho(f"IPA not found: {ipa_path}", fg=typer.colors.RED, err=True)
+                raise typer.Exit(code=1)
+            
+            # Get target device
+            if udid:
+                device = manager.get_device_by_udid(udid)
+                if not device:
+                    typer.secho(f"Device not found: {udid}", fg=typer.colors.RED, err=True)
+                    raise typer.Exit(code=1)
+            else:
+                devices = manager.detect_devices()
+                if not devices:
+                    typer.secho("No devices detected", fg=typer.colors.RED, err=True)
+                    raise typer.Exit(code=1)
+                device = devices[0]
+                typer.secho(f"[*] Using device: {device.display_name}", fg=typer.colors.CYAN)
+            
+            # Install
+            def progress_callback(percent: int, message: str):
+                typer.echo(f"  [{percent}%] {message}")
+            
+            from device.models import InstallationOptions
+            options = InstallationOptions(progress_callback=progress_callback)
+            
+            result = manager.install_ipa(device, ipa_path, options)
+            
+            if result.success:
+                typer.secho(f"\n[+] Installation successful!", fg=typer.colors.GREEN)
+            else:
+                typer.secho(f"\n[-] Installation failed: {result.message}", fg=typer.colors.RED, err=True)
+                if result.error_details:
+                    typer.echo(f"    Details: {result.error_details}")
+                raise typer.Exit(code=1)
+        
+        except ImportError as e:
+            typer.secho(f"Import error: {e}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=1)
+    
+    @cli_app.command("device-info")
+    def cmd_device_info() -> None:
+        """Show device module information and platform status."""
+        available, msg = _check_device_available()
+        
+        typer.secho("\n=== Device Module Status ===\n", fg=typer.colors.CYAN)
+        
+        if available:
+            typer.secho("[+] Device Module: Available", fg=typer.colors.GREEN)
+            
+            try:
+                from device import get_platform_info
+                info = get_platform_info()
+                
+                typer.echo(f"\nPlatform: {info['platform']}")
+                typer.echo(f"Detection: {'✓' if info['detection_supported'] else '✗'}")
+                typer.echo(f"Installation: {'✓' if info['installation_supported'] else '✗'}")
+                
+                deps = info['dependencies']
+                typer.echo(f"\nDependencies ({deps.platform}):")
+                for dep in deps.dependencies:
+                    status = "✓" if dep.installed else "✗"
+                    req = "(required)" if dep.required else "(optional)"
+                    color = typer.colors.GREEN if dep.installed else (typer.colors.RED if dep.required else typer.colors.YELLOW)
+                    typer.secho(f"  {status} {dep.name} {req}", fg=color)
+                
+                if deps.missing_required:
+                    typer.echo(f"\nMissing required: {', '.join(deps.missing_required)}")
+                    typer.echo(f"\n{info['installation_instructions']}")
+                
+            except Exception as e:
+                typer.secho(f"Error getting info: {e}", fg=typer.colors.RED)
+        else:
+            typer.secho(f"[-] Device Module: Not Available", fg=typer.colors.RED)
+            typer.echo(f"    Reason: {msg}")
+            typer.echo(_get_device_install_instructions())
+    
     @cli_app.callback(invoke_without_command=True)
     def main(
         ctx: typer.Context,
@@ -820,7 +1232,7 @@ def run_cli():
 
 
 # ============================================================================
-# GUI Interface (PyQt6 with Grok-style Milky Way Background)
+# GUI Interface (PyQt6 - Clean Default Style)
 # ============================================================================
 
 def run_gui():
@@ -845,269 +1257,16 @@ def run_gui():
         print("Install with: pip install PyQt6")
         sys.exit(1)
     
-    # Get logo path - support both development and PyInstaller bundled modes
+    # Get logo path
     def get_resource_path(filename: str) -> Path:
         """Get path to resource file, works for dev and PyInstaller bundle."""
         if getattr(sys, 'frozen', False):
-            # Running as compiled executable
             base_path = Path(sys._MEIPASS)
         else:
-            # Running as script
             base_path = Path(__file__).parent
         return base_path / filename
     
-    script_dir = Path(__file__).parent if not getattr(sys, 'frozen', False) else Path(sys._MEIPASS)
     logo_path = get_resource_path("logo.jpg")
-    
-    # ============ Grok-style Milky Way Background ============
-    @dataclass
-    class Star:
-        x: float
-        y: float
-        size: float
-        brightness: float
-        twinkle_speed: float
-        twinkle_phase: float
-    
-    @dataclass
-    class CosmicDust:
-        x: float
-        y: float
-        size: float
-        alpha: float
-        drift_x: float
-        drift_y: float
-    
-    class GrokSpaceWidget(QWidget):
-        """Grok AI style animated space background with milky way."""
-        
-        def __init__(self, parent=None):
-            super().__init__(parent)
-            self.stars: List[Star] = []
-            self.cosmic_dust: List[CosmicDust] = []
-            self.time = 0.0
-            self.milky_way_phase = 0.0
-            
-            self._init_cosmos()
-            
-            self.timer = QTimer(self)
-            self.timer.timeout.connect(self._animate)
-            self.timer.start(33)  # ~30 FPS
-        
-        def _init_cosmos(self):
-            """Initialize stars and cosmic dust."""
-            self.stars.clear()
-            self.cosmic_dust.clear()
-            
-            w = max(1920, self.width() if self.width() > 0 else 1920)
-            h = max(1080, self.height() if self.height() > 0 else 1080)
-            
-            # Create stars - more concentrated in center (milky way band)
-            for _ in range(400):
-                # Bias toward center vertically for milky way effect
-                if random.random() < 0.6:
-                    # Milky way band stars
-                    y = h * 0.3 + random.gauss(0, h * 0.15)
-                else:
-                    # Background stars
-                    y = random.uniform(0, h)
-                
-                self.stars.append(Star(
-                    x=random.uniform(0, w),
-                    y=y,
-                    size=random.uniform(0.5, 2.5),
-                    brightness=random.uniform(0.3, 1.0),
-                    twinkle_speed=random.uniform(0.02, 0.08),
-                    twinkle_phase=random.uniform(0, math.pi * 2)
-                ))
-            
-            # Cosmic dust particles for the milky way glow
-            for _ in range(150):
-                self.cosmic_dust.append(CosmicDust(
-                    x=random.uniform(0, w),
-                    y=h * 0.25 + random.gauss(0, h * 0.12),
-                    size=random.uniform(30, 120),
-                    alpha=random.uniform(0.02, 0.08),
-                    drift_x=random.uniform(-0.3, 0.3),
-                    drift_y=random.uniform(-0.1, 0.1)
-                ))
-        
-        def resizeEvent(self, event):
-            super().resizeEvent(event)
-            self._init_cosmos()
-        
-        def _animate(self):
-            """Update animation state."""
-            self.time += 0.016
-            self.milky_way_phase += 0.003
-            
-            # Update star twinkle
-            for star in self.stars:
-                star.twinkle_phase += star.twinkle_speed
-            
-            # Slowly drift cosmic dust
-            w = self.width()
-            for dust in self.cosmic_dust:
-                dust.x += dust.drift_x
-                dust.y += dust.drift_y
-                
-                # Wrap around
-                if dust.x < -dust.size:
-                    dust.x = w + dust.size
-                elif dust.x > w + dust.size:
-                    dust.x = -dust.size
-            
-            self.update()
-        
-        def paintEvent(self, event):
-            painter = QPainter(self)
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            
-            w = self.width()
-            h = self.height()
-            
-            # Pure black background
-            painter.fillRect(self.rect(), QColor(0, 0, 0))
-            
-            # Draw the milky way band
-            self._draw_milky_way(painter, w, h)
-            
-            # Draw cosmic dust
-            self._draw_cosmic_dust(painter)
-            
-            # Draw stars
-            self._draw_stars(painter)
-        
-        def _draw_milky_way(self, painter: QPainter, w: int, h: int):
-            """Draw the milky way band like in Grok app."""
-            center_y = h * 0.35
-            
-            # Multiple layers for depth
-            for layer in range(5):
-                spread = 80 + layer * 40
-                alpha_base = 25 - layer * 4
-                
-                # Wavy path across screen
-                path = QPainterPath()
-                
-                points = []
-                for i in range(20):
-                    x = (i / 19) * w
-                    wave = math.sin(x * 0.003 + self.milky_way_phase + layer * 0.5) * 30
-                    wave += math.sin(x * 0.007 + self.milky_way_phase * 0.7) * 20
-                    y = center_y + wave
-                    points.append((x, y))
-                
-                if points:
-                    path.moveTo(points[0][0], points[0][1] - spread)
-                    
-                    # Top edge
-                    for x, y in points:
-                        path.lineTo(x, y - spread + math.sin(x * 0.01 + self.time) * 10)
-                    
-                    # Bottom edge (reverse)
-                    for x, y in reversed(points):
-                        path.lineTo(x, y + spread + math.sin(x * 0.01 + self.time + 1) * 10)
-                    
-                    path.closeSubpath()
-                
-                # Gradient fill
-                gradient = QLinearGradient(0, center_y - spread, 0, center_y + spread)
-                gradient.setColorAt(0.0, QColor(255, 255, 255, 0))
-                gradient.setColorAt(0.3, QColor(200, 200, 220, alpha_base))
-                gradient.setColorAt(0.5, QColor(220, 220, 235, alpha_base + 10))
-                gradient.setColorAt(0.7, QColor(200, 200, 220, alpha_base))
-                gradient.setColorAt(1.0, QColor(255, 255, 255, 0))
-                
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QBrush(gradient))
-                painter.drawPath(path)
-            
-            # Central bright core
-            core_gradient = QRadialGradient(w * 0.5, center_y, 200)
-            core_gradient.setColorAt(0.0, QColor(255, 255, 255, 40))
-            core_gradient.setColorAt(0.3, QColor(230, 230, 240, 25))
-            core_gradient.setColorAt(0.6, QColor(200, 200, 220, 10))
-            core_gradient.setColorAt(1.0, QColor(255, 255, 255, 0))
-            painter.setBrush(QBrush(core_gradient))
-            painter.drawEllipse(QRectF(w * 0.3, center_y - 150, w * 0.4, 300))
-        
-        def _draw_cosmic_dust(self, painter: QPainter):
-            """Draw floating cosmic dust particles."""
-            for dust in self.cosmic_dust:
-                alpha = int(dust.alpha * 255 * (0.7 + 0.3 * math.sin(self.time + dust.x * 0.01)))
-                
-                gradient = QRadialGradient(dust.x, dust.y, dust.size)
-                gradient.setColorAt(0.0, QColor(230, 230, 240, alpha))
-                gradient.setColorAt(0.4, QColor(200, 200, 220, alpha // 2))
-                gradient.setColorAt(1.0, QColor(255, 255, 255, 0))
-                
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QBrush(gradient))
-                painter.drawEllipse(QRectF(
-                    dust.x - dust.size,
-                    dust.y - dust.size,
-                    dust.size * 2,
-                    dust.size * 2
-                ))
-        
-        def _draw_stars(self, painter: QPainter):
-            """Draw twinkling stars."""
-            for star in self.stars:
-                # Twinkle effect
-                twinkle = 0.5 + 0.5 * math.sin(star.twinkle_phase)
-                alpha = int(star.brightness * twinkle * 255)
-                
-                if alpha < 20:
-                    continue
-                
-                color = QColor(255, 255, 255, alpha)
-                
-                # Glow for brighter stars
-                if star.size > 1.5 and alpha > 100:
-                    glow_size = star.size * 4
-                    glow = QRadialGradient(star.x, star.y, glow_size)
-                    glow.setColorAt(0.0, QColor(255, 255, 255, alpha // 3))
-                    glow.setColorAt(0.5, QColor(200, 210, 255, alpha // 6))
-                    glow.setColorAt(1.0, QColor(255, 255, 255, 0))
-                    
-                    painter.setPen(Qt.PenStyle.NoPen)
-                    painter.setBrush(QBrush(glow))
-                    painter.drawEllipse(QRectF(
-                        star.x - glow_size,
-                        star.y - glow_size,
-                        glow_size * 2,
-                        glow_size * 2
-                    ))
-                
-                # Star core
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QBrush(color))
-                painter.drawEllipse(QRectF(
-                    star.x - star.size / 2,
-                    star.y - star.size / 2,
-                    star.size,
-                    star.size
-                ))
-    
-    # ============ Icon Helper (Text-based icons) ============
-    class Icons:
-        """Text-based icons instead of emojis."""
-        APP = "[App]"
-        IPA = "[IPA]"
-        FOLDER = "[Dir]"
-        PACKAGE = "[Pkg]"
-        BUILD = "[Build]"
-        CONVERT = "[>>]"
-        BROWSE = "[...]"
-        CLEAR = "[x]"
-        CONSOLE = "[>_]"
-        SETTINGS = "[*]"
-        SUCCESS = "[+]"
-        ERROR = "[-]"
-        WARNING = "[!]"
-        INFO = "[i]"
-        ARROW = "->"
     
     # ============ Worker Thread ============
     class WorkerThread(QThread):
@@ -1128,37 +1287,30 @@ def run_gui():
             except Exception as e:
                 self.finished.emit(False, str(e))
     
-    # ============ Main Window ============
+    # ============ Main Window (Clean Default Style) ============
     class IOSToolGUI(QMainWindow):
         def __init__(self):
             super().__init__()
-            self.setWindowTitle("IOS TOOLS MAKER")
-            self.setMinimumSize(900, 700)
-            self.resize(1000, 750)
+            self.setWindowTitle("iOS Tools Maker")
+            self.setMinimumSize(800, 600)
+            self.resize(900, 700)
             
-            # Set window icon from logo.jpg
             if logo_path.exists():
                 self.setWindowIcon(QIcon(str(logo_path)))
             
             self.core = IOSToolCore(log_callback=self._log_from_core)
             self.worker = None
+            self._last_signed_ipa = None
+            self._detected_devices = []
             
             self._setup_ui()
-            self._apply_styles()
         
         def _log_from_core(self, message: str, level: str = "info"):
             """Thread-safe logging from core."""
-            self.log_text.append(self._format_log(message, level))
+            self.log_text.append(message)
         
         def _format_log(self, message: str, level: str) -> str:
-            colors = {
-                "info": "#CCCCCC",
-                "success": "#4ADE80",
-                "warning": "#FBBF24",
-                "error": "#F87171",
-            }
-            color = colors.get(level, "#CCCCCC")
-            return f'<span style="color: {color}; font-family: Consolas, monospace;">{message}</span>'
+            return message
         
         def _setup_ui(self):
             # Central widget
@@ -1167,445 +1319,556 @@ def run_gui():
             
             # Main layout
             main_layout = QVBoxLayout(central)
-            main_layout.setContentsMargins(0, 0, 0, 0)
-            main_layout.setSpacing(0)
+            main_layout.setContentsMargins(20, 20, 20, 20)
+            main_layout.setSpacing(15)
             
-            # Space background
-            self.space_bg = GrokSpaceWidget(central)
-            self.space_bg.setGeometry(central.rect())
-            
-            # Content overlay
-            content = QWidget(central)
-            content_layout = QVBoxLayout(content)
-            content_layout.setContentsMargins(50, 25, 50, 35)
-            content_layout.setSpacing(15)
-            
-            # Title section
-            title_container = QWidget()
-            title_layout = QVBoxLayout(title_container)
-            title_layout.setSpacing(6)
-            title_layout.setContentsMargins(0, 15, 0, 25)
-            
-            title = QLabel("IOS TOOLS")
+            # Title
+            title = QLabel("iOS Tools Maker")
             title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            title.setFont(QFont("Cairo", 42, QFont.Weight.ExtraLight))
-            title.setStyleSheet("""
-                color: white;
-                background: transparent;
-                letter-spacing: 12px;
-            """)
-            title_layout.addWidget(title)
+            title.setFont(QFont("Segoe UI", 18, QFont.Weight.Bold))
+            main_layout.addWidget(title)
             
-            # Animated subtitle
-            self.subtitle = QLabel("Build from the Universe_")
-            self.subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.subtitle.setFont(QFont("Cairo", 12))
-            self.subtitle.setStyleSheet("""
-                color: rgba(160, 170, 200, 0.6);
-                background: transparent;
-                letter-spacing: 4px;
-                margin-top: 5px;
-            """)
-            title_layout.addWidget(self.subtitle)
-            
-            # Cursor blink animation
-            self.cursor_visible = True
-            self.cursor_timer = QTimer()
-            self.cursor_timer.timeout.connect(self._blink_cursor)
-            self.cursor_timer.start(530)
-            
-            content_layout.addWidget(title_container)
+            subtitle = QLabel("Build • Sign • Deploy")
+            subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            subtitle.setFont(QFont("Segoe UI", 10))
+            main_layout.addWidget(subtitle)
             
             # Tab widget
             self.tabs = QTabWidget()
-            self.tabs.setDocumentMode(True)
-            content_layout.addWidget(self.tabs, stretch=2)
+            main_layout.addWidget(self.tabs, stretch=2)
             
             # Create tabs
             self._create_app2ipa_tab()
             self._create_folder2deb_tab()
             self._create_build_dylib_tab()
             self._create_compile_tab()
+            self._create_sign_annual_tab()
+            self._create_sign_weekly_tab()
+            self._create_device_tab()
             
             # Log area
-            log_container = QWidget()
-            log_layout = QVBoxLayout(log_container)
-            log_layout.setContentsMargins(0, 10, 0, 0)
-            
-            log_header = QHBoxLayout()
-            log_label = QLabel("   Console")
-            log_label.setFont(QFont("Cairo", 10, QFont.Weight.Medium))
-            log_label.setStyleSheet("""
-                color: rgba(140, 150, 180, 0.7);
-                background: transparent;
-                letter-spacing: 1px;
-            """)
-            log_header.addWidget(log_label)
-            
-            log_header.addStretch()
-            
-            clear_btn = QPushButton("Clear")
-            clear_btn.setFixedWidth(75)
-            clear_btn.setFixedHeight(28)
-            clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            clear_btn.clicked.connect(lambda: self.log_text.clear())
-            clear_btn.setStyleSheet("""
-                QPushButton {
-                    background: rgba(255,255,255,0.05);
-                    border: 1px solid rgba(255,255,255,0.1);
-                    border-radius: 8px;
-                    color: rgba(255,255,255,0.5);
-                    padding: 4px 12px;
-                    font-size: 10px;
-                    font-weight: 500;
-                    letter-spacing: 0.5px;
-                }
-                QPushButton:hover {
-                    background: rgba(255,255,255,0.1);
-                    color: rgba(255,255,255,0.8);
-                    border: 1px solid rgba(255,255,255,0.15);
-                }
-            """)
-            log_header.addWidget(clear_btn)
-            
-            log_layout.addLayout(log_header)
+            log_group = QGroupBox("Console")
+            log_layout = QVBoxLayout(log_group)
             
             self.log_text = QTextEdit()
             self.log_text.setReadOnly(True)
-            self.log_text.setFont(QFont("Consolas", 10))
-            self.log_text.setMinimumHeight(100)
-            self.log_text.setMaximumHeight(150)
+            self.log_text.setFont(QFont("Consolas", 9))
+            self.log_text.setMaximumHeight(120)
             log_layout.addWidget(self.log_text)
+            
+            clear_btn = QPushButton("Clear")
+            clear_btn.setFixedWidth(80)
+            clear_btn.clicked.connect(lambda: self.log_text.clear())
+            log_layout.addWidget(clear_btn, alignment=Qt.AlignmentFlag.AlignRight)
+            
+            main_layout.addWidget(log_group)
             
             # Progress bar
             self.progress = QProgressBar()
             self.progress.setVisible(False)
             self.progress.setTextVisible(False)
             self.progress.setMaximum(0)
-            self.progress.setFixedHeight(3)
-            log_layout.addWidget(self.progress)
-            
-            content_layout.addWidget(log_container, stretch=1)
-            
-            main_layout.addWidget(content)
-        
-        def _blink_cursor(self):
-            """Blink the cursor in subtitle."""
-            self.cursor_visible = not self.cursor_visible
-            base_text = "Build from the Universe"
-            if self.cursor_visible:
-                self.subtitle.setText(base_text + "_")
-            else:
-                self.subtitle.setText(base_text + " ")
-        
-        def resizeEvent(self, event):
-            super().resizeEvent(event)
-            self.space_bg.setGeometry(self.centralWidget().rect())
-        
-        def _create_grok_button(self, text: str, primary: bool = False, icon: str = "") -> QPushButton:
-            """Create a glassy frosted button with Cairo font."""
-            display_text = f"{icon}  {text}" if icon else text
-            btn = QPushButton(display_text)
-            btn.setMinimumHeight(54)
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setFont(QFont("Cairo", 12, QFont.Weight.DemiBold))
-            
-            if primary:
-                btn.setStyleSheet("""
-                    QPushButton {
-                        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                            stop:0 rgba(255, 255, 255, 0.18),
-                            stop:0.4 rgba(255, 255, 255, 0.08),
-                            stop:0.6 rgba(200, 210, 255, 0.06),
-                            stop:1 rgba(180, 190, 255, 0.12));
-                        border: 1px solid rgba(255, 255, 255, 0.35);
-                        border-top: 1px solid rgba(255, 255, 255, 0.5);
-                        border-left: 1px solid rgba(255, 255, 255, 0.4);
-                        border-radius: 16px;
-                        color: white;
-                        padding: 15px 40px;
-                        font-weight: 600;
-                        font-size: 14px;
-                        letter-spacing: 0.5px;
-                    }
-                    QPushButton:hover {
-                        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                            stop:0 rgba(255, 255, 255, 0.28),
-                            stop:0.4 rgba(255, 255, 255, 0.15),
-                            stop:0.6 rgba(220, 225, 255, 0.12),
-                            stop:1 rgba(200, 210, 255, 0.18));
-                        border: 1px solid rgba(255, 255, 255, 0.5);
-                        border-top: 1px solid rgba(255, 255, 255, 0.65);
-                        border-left: 1px solid rgba(255, 255, 255, 0.55);
-                    }
-                    QPushButton:pressed {
-                        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                            stop:0 rgba(255, 255, 255, 0.1),
-                            stop:1 rgba(180, 190, 255, 0.15));
-                        border: 1px solid rgba(255, 255, 255, 0.25);
-                        padding-top: 16px;
-                        padding-bottom: 14px;
-                    }
-                    QPushButton:disabled {
-                        background: rgba(255, 255, 255, 0.05);
-                        border: 1px solid rgba(255, 255, 255, 0.1);
-                        color: rgba(255, 255, 255, 0.25);
-                    }
-                """)
-            else:
-                btn.setStyleSheet("""
-                    QPushButton {
-                        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                            stop:0 rgba(255, 255, 255, 0.12),
-                            stop:0.5 rgba(255, 255, 255, 0.05),
-                            stop:1 rgba(255, 255, 255, 0.08));
-                        border: 1px solid rgba(255, 255, 255, 0.2);
-                        border-top: 1px solid rgba(255, 255, 255, 0.3);
-                        border-left: 1px solid rgba(255, 255, 255, 0.25);
-                        border-radius: 14px;
-                        color: rgba(255, 255, 255, 0.9);
-                        padding: 12px 26px;
-                        font-weight: 500;
-                        font-size: 12px;
-                    }
-                    QPushButton:hover {
-                        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                            stop:0 rgba(255, 255, 255, 0.2),
-                            stop:0.5 rgba(255, 255, 255, 0.1),
-                            stop:1 rgba(255, 255, 255, 0.14));
-                        border: 1px solid rgba(255, 255, 255, 0.35);
-                        border-top: 1px solid rgba(255, 255, 255, 0.45);
-                        color: white;
-                    }
-                    QPushButton:pressed {
-                        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                            stop:0 rgba(255, 255, 255, 0.06),
-                            stop:1 rgba(255, 255, 255, 0.1));
-                        padding-top: 13px;
-                        padding-bottom: 11px;
-                    }
-                """)
-            
-            return btn
-        
-        def _create_grok_input(self, placeholder: str) -> QLineEdit:
-            """Create a glassy input field with Cairo font."""
-            inp = QLineEdit()
-            inp.setPlaceholderText(placeholder)
-            inp.setMinimumHeight(48)
-            inp.setFont(QFont("Cairo", 11))
-            return inp
+            main_layout.addWidget(self.progress)
         
         def _create_section_label(self, text: str) -> QLabel:
-            """Create a section label with subtle styling."""
+            """Create a section label."""
             label = QLabel(text)
-            label.setFont(QFont("Cairo", 9, QFont.Weight.Medium))
-            label.setStyleSheet("""
-                color: rgba(180, 190, 255, 0.6);
-                background: transparent;
-                margin-top: 12px;
-                margin-bottom: 4px;
-                padding-left: 4px;
-                letter-spacing: 1.5px;
-            """)
+            label.setFont(QFont("Segoe UI", 9))
             return label
         
         def _create_app2ipa_tab(self):
             tab = QWidget()
             layout = QVBoxLayout(tab)
-            layout.setSpacing(12)
-            layout.setContentsMargins(20, 20, 20, 20)
+            layout.setSpacing(10)
+            layout.setContentsMargins(15, 15, 15, 15)
             
             # Input section
-            layout.addWidget(self._create_section_label("INPUT .APP DIRECTORY"))
-            
+            layout.addWidget(self._create_section_label("Input .app Directory:"))
             input_layout = QHBoxLayout()
-            self.app2ipa_input = self._create_grok_input("Select .app folder...")
+            self.app2ipa_input = QLineEdit()
+            self.app2ipa_input.setPlaceholderText("Select .app folder...")
             input_layout.addWidget(self.app2ipa_input)
-            
-            browse_btn = self._create_grok_button("Browse")
-            browse_btn.setFixedWidth(100)
+            browse_btn = QPushButton("Browse")
             browse_btn.clicked.connect(lambda: self._browse_dir(self.app2ipa_input))
             input_layout.addWidget(browse_btn)
             layout.addLayout(input_layout)
             
             # Output section
-            layout.addWidget(self._create_section_label("OUTPUT .IPA FILE (OPTIONAL)"))
-            
+            layout.addWidget(self._create_section_label("Output .ipa File (Optional):"))
             output_layout = QHBoxLayout()
-            self.app2ipa_output = self._create_grok_input("Leave empty for default...")
+            self.app2ipa_output = QLineEdit()
+            self.app2ipa_output.setPlaceholderText("Leave empty for default...")
             output_layout.addWidget(self.app2ipa_output)
-            
-            browse_btn2 = self._create_grok_button("Browse")
-            browse_btn2.setFixedWidth(100)
+            browse_btn2 = QPushButton("Browse")
             browse_btn2.clicked.connect(lambda: self._browse_save(self.app2ipa_output, "IPA Files (*.ipa)"))
             output_layout.addWidget(browse_btn2)
             layout.addLayout(output_layout)
             
-            layout.addSpacing(20)
+            layout.addStretch()
             
             # Convert button
-            self.app2ipa_btn = self._create_grok_button("Convert to IPA", primary=True)
+            self.app2ipa_btn = QPushButton("Convert to IPA")
             self.app2ipa_btn.clicked.connect(self._run_app2ipa)
             layout.addWidget(self.app2ipa_btn)
             
-            layout.addStretch()
             self.tabs.addTab(tab, "App to IPA")
         
         def _create_folder2deb_tab(self):
             tab = QWidget()
             layout = QVBoxLayout(tab)
-            layout.setSpacing(12)
-            layout.setContentsMargins(20, 20, 20, 20)
+            layout.setSpacing(10)
+            layout.setContentsMargins(15, 15, 15, 15)
             
             # Input section
-            layout.addWidget(self._create_section_label("PACKAGE ROOT DIRECTORY"))
-            
+            layout.addWidget(self._create_section_label("Package Root Directory:"))
             input_layout = QHBoxLayout()
-            self.folder2deb_input = self._create_grok_input("Must contain DEBIAN/control...")
+            self.folder2deb_input = QLineEdit()
+            self.folder2deb_input.setPlaceholderText("Must contain DEBIAN/control...")
             input_layout.addWidget(self.folder2deb_input)
-            
-            browse_btn = self._create_grok_button("Browse")
-            browse_btn.setFixedWidth(100)
+            browse_btn = QPushButton("Browse")
             browse_btn.clicked.connect(lambda: self._browse_dir(self.folder2deb_input))
             input_layout.addWidget(browse_btn)
             layout.addLayout(input_layout)
             
             # Output section
-            layout.addWidget(self._create_section_label("OUTPUT .DEB FILE (OPTIONAL)"))
-            
+            layout.addWidget(self._create_section_label("Output .deb File (Optional):"))
             output_layout = QHBoxLayout()
-            self.folder2deb_output = self._create_grok_input("Leave empty for default...")
+            self.folder2deb_output = QLineEdit()
+            self.folder2deb_output.setPlaceholderText("Leave empty for default...")
             output_layout.addWidget(self.folder2deb_output)
-            
-            browse_btn2 = self._create_grok_button("Browse")
-            browse_btn2.setFixedWidth(100)
+            browse_btn2 = QPushButton("Browse")
             browse_btn2.clicked.connect(lambda: self._browse_save(self.folder2deb_output, "DEB Files (*.deb)"))
             output_layout.addWidget(browse_btn2)
             layout.addLayout(output_layout)
             
-            layout.addSpacing(20)
+            layout.addStretch()
             
             # Build button
-            self.folder2deb_btn = self._create_grok_button("Build DEB Package", primary=True)
+            self.folder2deb_btn = QPushButton("Build DEB Package")
             self.folder2deb_btn.clicked.connect(self._run_folder2deb)
             layout.addWidget(self.folder2deb_btn)
             
-            layout.addStretch()
             self.tabs.addTab(tab, "Folder to DEB")
         
         def _create_build_dylib_tab(self):
             tab = QWidget()
             layout = QVBoxLayout(tab)
-            layout.setSpacing(12)
-            layout.setContentsMargins(20, 20, 20, 20)
+            layout.setSpacing(10)
+            layout.setContentsMargins(15, 15, 15, 15)
             
             # Input section
-            layout.addWidget(self._create_section_label("PROJECT DIRECTORY"))
-            
+            layout.addWidget(self._create_section_label("Source Files (.c/.m/.swift):"))
             input_layout = QHBoxLayout()
-            self.dylib_input = self._create_grok_input("Select project folder...")
+            self.dylib_input = QLineEdit()
+            self.dylib_input.setPlaceholderText("Select source file(s)...")
             input_layout.addWidget(self.dylib_input)
-            
-            browse_btn = self._create_grok_button("Browse")
-            browse_btn.setFixedWidth(100)
-            browse_btn.clicked.connect(lambda: self._browse_dir(self.dylib_input))
+            browse_btn = QPushButton("Browse")
+            browse_btn.clicked.connect(lambda: self._browse_files(self.dylib_input, "Source Files (*.c *.m *.swift)"))
             input_layout.addWidget(browse_btn)
             layout.addLayout(input_layout)
             
-            # Source file section
-            layout.addWidget(self._create_section_label("SOURCE FILE (OPTIONAL)"))
-            self.dylib_source = self._create_grok_input("e.g., tweak.m, dylib.c (auto-detect if empty)")
-            layout.addWidget(self.dylib_source)
-            
             # Output section
-            layout.addWidget(self._create_section_label("OUTPUT NAME"))
-            self.dylib_output = self._create_grok_input("tweak.dylib")
-            self.dylib_output.setText("tweak.dylib")
-            layout.addWidget(self.dylib_output)
+            layout.addWidget(self._create_section_label("Output .dylib File (Optional):"))
+            output_layout = QHBoxLayout()
+            self.dylib_output = QLineEdit()
+            self.dylib_output.setPlaceholderText("Leave empty for default...")
+            output_layout.addWidget(self.dylib_output)
+            browse_btn2 = QPushButton("Browse")
+            browse_btn2.clicked.connect(lambda: self._browse_save(self.dylib_output, "Dylib Files (*.dylib)"))
+            output_layout.addWidget(browse_btn2)
+            layout.addLayout(output_layout)
             
-            layout.addSpacing(20)
+            layout.addStretch()
             
             # Build button
-            self.dylib_btn = self._create_grok_button("Build Dylib", primary=True)
+            self.dylib_btn = QPushButton("Build Dynamic Library")
             self.dylib_btn.clicked.connect(self._run_build_dylib)
             layout.addWidget(self.dylib_btn)
             
-            # Info
-            info = QLabel("Requires Theos or clang with iOS SDK")
-            info.setFont(QFont("Cairo", 9))
-            info.setStyleSheet("color: rgba(255,255,255,0.4); background: transparent;")
-            info.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            layout.addWidget(info)
-            
-            layout.addStretch()
             self.tabs.addTab(tab, "Build Dylib")
         
         def _create_compile_tab(self):
             tab = QWidget()
             layout = QVBoxLayout(tab)
-            layout.setSpacing(12)
-            layout.setContentsMargins(20, 20, 20, 20)
+            layout.setSpacing(10)
+            layout.setContentsMargins(15, 15, 15, 15)
             
-            # Header
-            header = QLabel("Compile Standalone Executable")
-            header.setFont(QFont("Cairo", 14, QFont.Weight.DemiBold))
-            header.setStyleSheet("color: rgba(255,255,255,0.9); background: transparent;")
-            layout.addWidget(header)
+            # Input section
+            layout.addWidget(self._create_section_label("Source File:"))
+            input_layout = QHBoxLayout()
+            self.compile_input = QLineEdit()
+            self.compile_input.setPlaceholderText("Select source file...")
+            input_layout.addWidget(self.compile_input)
+            browse_btn = QPushButton("Browse")
+            browse_btn.clicked.connect(lambda: self._browse_file(self.compile_input, "Source Files (*.c *.m *.swift)"))
+            input_layout.addWidget(browse_btn)
+            layout.addLayout(input_layout)
             
-            desc = QLabel("Create standalone binaries for Windows (.exe), Linux, macOS, and BSD")
-            desc.setFont(QFont("Cairo", 10))
-            desc.setStyleSheet("color: rgba(255,255,255,0.5); background: transparent;")
-            layout.addWidget(desc)
+            # Output section
+            layout.addWidget(self._create_section_label("Output Executable (Optional):"))
+            output_layout = QHBoxLayout()
+            self.compile_output = QLineEdit()
+            self.compile_output.setPlaceholderText("Leave empty for default...")
+            output_layout.addWidget(self.compile_output)
+            browse_btn2 = QPushButton("Browse")
+            browse_btn2.clicked.connect(lambda: self._browse_save(self.compile_output, "All Files (*)"))
+            output_layout.addWidget(browse_btn2)
+            layout.addLayout(output_layout)
             
-            layout.addSpacing(15)
-            
-            # Output name section
-            layout.addWidget(self._create_section_label("OUTPUT NAME (OPTIONAL)"))
-            self.compile_output = self._create_grok_input("Auto: ios_tool-[os]-[arch] e.g. ios_tool-win-amd64.exe")
-            layout.addWidget(self.compile_output)
-            
-            # Platform info
-            import platform
-            current_os = platform.system()
-            current_arch = platform.machine()
-            
-            # Normalize arch display
-            arch_display = current_arch
-            if current_arch.lower() in ["x86_64", "amd64", "x64"]:
-                arch_display = "AMD64 (x86_64)"
-            elif current_arch.lower() in ["arm64", "aarch64"]:
-                arch_display = "ARM64 (Apple Silicon / ARM)"
-            elif current_arch.lower() in ["armv7l", "armv7"]:
-                arch_display = "ARM (32-bit)"
-            
-            os_info = QLabel(f"Current Platform: {current_os} / {arch_display}")
-            os_info.setFont(QFont("Cairo", 10))
-            os_info.setStyleSheet("color: rgba(120,180,255,0.8); background: transparent; margin-top: 10px;")
-            layout.addWidget(os_info)
-            
-            layout.addSpacing(25)
+            layout.addStretch()
             
             # Compile button
-            self.compile_btn = self._create_grok_button("Compile Binary", primary=True)
+            self.compile_btn = QPushButton("Compile")
             self.compile_btn.clicked.connect(self._run_compile)
             layout.addWidget(self.compile_btn)
             
-            # Platform notes with architecture info
-            notes = QLabel(
-                "Output Binaries:\n"
-                "  Windows:  ios_tool-win-amd64.exe  |  ios_tool-win-arm64.exe\n"
-                "  Linux:    ios_tool-linux-amd64   |  ios_tool-linux-arm64\n"
-                "  macOS:    ios_tool-macos-amd64   |  ios_tool-macos-arm64\n"
-                "  BSD:      ios_tool-bsd-amd64     |  ios_tool-bsd-arm64\n\n"
-                "Requires: pip install pyinstaller"
-            )
-            notes.setFont(QFont("Cairo", 9))
-            notes.setStyleSheet("color: rgba(255,255,255,0.4); background: transparent; margin-top: 15px;")
-            layout.addWidget(notes)
+            self.tabs.addTab(tab, "Compile")
+        
+        def _create_sign_annual_tab(self):
+            """Create Annual Signing tab (P12 + Provisioning)."""
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+            layout.setSpacing(10)
+            layout.setContentsMargins(15, 15, 15, 15)
+            
+            # Check if signing is available
+            signing_available, signing_msg = _check_signing_available()
+            
+            if not signing_available:
+                info_label = QLabel(
+                    f"Annual Signing (Developer Certificate)\n\n"
+                    f"Status: Not Available\nReason: {signing_msg}\n\n"
+                    "Install: pip install cryptography pyOpenSSL"
+                )
+                info_label.setWordWrap(True)
+                layout.addWidget(info_label)
+                layout.addStretch()
+                self.tabs.addTab(tab, "Sign (Annual)")
+                return
+            
+            # IPA Input
+            layout.addWidget(self._create_section_label("Input IPA File:"))
+            ipa_layout = QHBoxLayout()
+            self.annual_ipa_input = QLineEdit()
+            self.annual_ipa_input.setPlaceholderText("Select IPA file to sign...")
+            ipa_layout.addWidget(self.annual_ipa_input)
+            browse_ipa = QPushButton("Browse")
+            browse_ipa.clicked.connect(lambda: self._browse_file(self.annual_ipa_input, "IPA Files (*.ipa)"))
+            ipa_layout.addWidget(browse_ipa)
+            layout.addLayout(ipa_layout)
+            
+            # P12 Input
+            layout.addWidget(self._create_section_label("P12 Certificate:"))
+            p12_layout = QHBoxLayout()
+            self.annual_p12_input = QLineEdit()
+            self.annual_p12_input.setPlaceholderText("Select .p12 certificate file...")
+            p12_layout.addWidget(self.annual_p12_input)
+            browse_p12 = QPushButton("Browse")
+            browse_p12.clicked.connect(lambda: self._browse_file(self.annual_p12_input, "P12 Files (*.p12)"))
+            p12_layout.addWidget(browse_p12)
+            layout.addLayout(p12_layout)
+            
+            # P12 Password
+            layout.addWidget(self._create_section_label("P12 Password:"))
+            self.annual_password = QLineEdit()
+            self.annual_password.setPlaceholderText("Certificate password...")
+            self.annual_password.setEchoMode(QLineEdit.EchoMode.Password)
+            layout.addWidget(self.annual_password)
+            
+            # Provisioning Profile
+            layout.addWidget(self._create_section_label("Provisioning Profile:"))
+            prov_layout = QHBoxLayout()
+            self.annual_provision_input = QLineEdit()
+            self.annual_provision_input.setPlaceholderText("Select .mobileprovision file...")
+            prov_layout.addWidget(self.annual_provision_input)
+            browse_prov = QPushButton("Browse")
+            browse_prov.clicked.connect(lambda: self._browse_file(self.annual_provision_input, "Provisioning (*.mobileprovision)"))
+            prov_layout.addWidget(browse_prov)
+            layout.addLayout(prov_layout)
+            
+            # Output
+            layout.addWidget(self._create_section_label("Output IPA (Optional):"))
+            out_layout = QHBoxLayout()
+            self.annual_output = QLineEdit()
+            self.annual_output.setPlaceholderText("Leave empty for default...")
+            out_layout.addWidget(self.annual_output)
+            browse_out = QPushButton("Browse")
+            browse_out.clicked.connect(lambda: self._browse_save(self.annual_output, "IPA Files (*.ipa)"))
+            out_layout.addWidget(browse_out)
+            layout.addLayout(out_layout)
             
             layout.addStretch()
-            self.tabs.addTab(tab, "Compile")
+            
+            # Sign button
+            self.annual_sign_btn = QPushButton("Sign IPA (Annual)")
+            self.annual_sign_btn.clicked.connect(self._run_sign_annual)
+            layout.addWidget(self.annual_sign_btn)
+            
+            self.tabs.addTab(tab, "Sign (Annual)")
+        
+        def _create_sign_weekly_tab(self):
+            """Create Weekly Signing tab (Apple ID)."""
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+            layout.setSpacing(10)
+            layout.setContentsMargins(15, 15, 15, 15)
+            
+            # Check if signing is available
+            signing_available, signing_msg = _check_signing_available()
+            
+            if not signing_available:
+                info_label = QLabel(
+                    f"Weekly Signing (Apple ID)\n\n"
+                    f"Status: Not Available\nReason: {signing_msg}\n\n"
+                    "Install: pip install cryptography pyOpenSSL requests"
+                )
+                info_label.setWordWrap(True)
+                layout.addWidget(info_label)
+                layout.addStretch()
+                self.tabs.addTab(tab, "Sign (Weekly)")
+                return
+            
+            # IPA Input
+            layout.addWidget(self._create_section_label("Input IPA File:"))
+            ipa_layout = QHBoxLayout()
+            self.weekly_ipa_input = QLineEdit()
+            self.weekly_ipa_input.setPlaceholderText("Select IPA file to sign...")
+            ipa_layout.addWidget(self.weekly_ipa_input)
+            browse_ipa = QPushButton("Browse")
+            browse_ipa.clicked.connect(lambda: self._browse_file(self.weekly_ipa_input, "IPA Files (*.ipa)"))
+            ipa_layout.addWidget(browse_ipa)
+            layout.addLayout(ipa_layout)
+            
+            # Apple ID
+            layout.addWidget(self._create_section_label("Apple ID:"))
+            self.weekly_apple_id = QLineEdit()
+            self.weekly_apple_id.setPlaceholderText("your@apple.id")
+            layout.addWidget(self.weekly_apple_id)
+            
+            # Password
+            layout.addWidget(self._create_section_label("Apple ID Password:"))
+            self.weekly_password = QLineEdit()
+            self.weekly_password.setPlaceholderText("App-specific password recommended")
+            self.weekly_password.setEchoMode(QLineEdit.EchoMode.Password)
+            layout.addWidget(self.weekly_password)
+            
+            # Device UDID
+            layout.addWidget(self._create_section_label("Device UDID:"))
+            self.weekly_udid = QLineEdit()
+            self.weekly_udid.setPlaceholderText("40-character device UDID...")
+            layout.addWidget(self.weekly_udid)
+            
+            # 2FA Code
+            layout.addWidget(self._create_section_label("2FA Code (if required):"))
+            self.weekly_2fa = QLineEdit()
+            self.weekly_2fa.setPlaceholderText("6-digit verification code...")
+            layout.addWidget(self.weekly_2fa)
+            
+            layout.addStretch()
+            
+            # Sign button
+            self.weekly_sign_btn = QPushButton("Sign IPA (Weekly)")
+            self.weekly_sign_btn.clicked.connect(self._run_sign_weekly)
+            layout.addWidget(self.weekly_sign_btn)
+            
+            # Warning
+            warning = QLabel("Note: Signature valid for 7 days only. Must re-sign weekly.")
+            warning.setFont(QFont("Segoe UI", 9))
+            layout.addWidget(warning)
+            
+            layout.addStretch()
+            self.tabs.addTab(tab, "Sign (Weekly)")
+        
+        def _create_device_tab(self):
+            """Create Device Management tab."""
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+            layout.setSpacing(10)
+            layout.setContentsMargins(15, 15, 15, 15)
+            
+            # Check if device module is available
+            device_available, device_msg = _check_device_available()
+            
+            import platform
+            platform_name = platform.system()
+            
+            # Status
+            status_group = QGroupBox("Platform Status")
+            status_layout = QVBoxLayout(status_group)
+            
+            self.device_status_label = QLabel(f"Platform: {platform_name}")
+            status_layout.addWidget(self.device_status_label)
+            
+            detection_status = "Available" if device_available else f"Not Available: {device_msg}"
+            self.device_detection_label = QLabel(f"Detection: {detection_status}")
+            status_layout.addWidget(self.device_detection_label)
+            
+            layout.addWidget(status_group)
+            
+            if not device_available:
+                instructions = _get_device_install_instructions()
+                info_label = QLabel(instructions[:500] + "..." if len(instructions) > 500 else instructions)
+                info_label.setWordWrap(True)
+                layout.addWidget(info_label)
+                layout.addStretch()
+                self.tabs.addTab(tab, "Device")
+                return
+            
+            # Device list
+            layout.addWidget(self._create_section_label("Connected Devices:"))
+            
+            self.device_list_frame = QFrame()
+            self.device_list_frame.setFrameShape(QFrame.Shape.StyledPanel)
+            self.device_list_frame.setMinimumHeight(80)
+            self.device_list_layout = QVBoxLayout(self.device_list_frame)
+            
+            self.no_device_label = QLabel("No devices detected. Click 'Detect Devices' to scan.")
+            self.no_device_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.device_list_layout.addWidget(self.no_device_label)
+            
+            layout.addWidget(self.device_list_frame)
+            
+            # Detect button
+            detect_btn = QPushButton("Detect Devices")
+            detect_btn.clicked.connect(self._detect_devices)
+            layout.addWidget(detect_btn)
+            
+            # IPA Installation
+            layout.addWidget(self._create_section_label("Install IPA to Device:"))
+            
+            ipa_layout = QHBoxLayout()
+            self.device_ipa_input = QLineEdit()
+            self.device_ipa_input.setPlaceholderText("Select signed IPA file...")
+            ipa_layout.addWidget(self.device_ipa_input)
+            browse_ipa = QPushButton("Browse")
+            browse_ipa.clicked.connect(lambda: self._browse_file(self.device_ipa_input, "IPA Files (*.ipa)"))
+            ipa_layout.addWidget(browse_ipa)
+            layout.addLayout(ipa_layout)
+            
+            layout.addStretch()
+            
+            # Install button
+            self.device_install_btn = QPushButton("Install to Device")
+            self.device_install_btn.clicked.connect(self._install_to_device)
+            layout.addWidget(self.device_install_btn)
+            
+            note = QLabel("Device must be connected via USB and trusted")
+            note.setFont(QFont("Segoe UI", 9))
+            layout.addWidget(note)
+            
+            layout.addStretch()
+            self.tabs.addTab(tab, "Device")
+            
+            # Store detected devices
+            self._detected_devices = []
+        
+        def _detect_devices(self):
+            """Detect connected iOS devices."""
+            self.log_text.append("[>] Detecting iOS devices...")
+            
+            try:
+                from device import get_device_manager
+                
+                manager = get_device_manager()
+                devices = manager.detect_devices()
+                self._detected_devices = devices
+                
+                # Clear old device labels
+                while self.device_list_layout.count() > 0:
+                    item = self.device_list_layout.takeAt(0)
+                    if item.widget():
+                        item.widget().deleteLater()
+                
+                if devices:
+                    for i, device in enumerate(devices):
+                        device_widget = QFrame()
+                        device_widget.setFrameShape(QFrame.Shape.StyledPanel)
+                        device_layout = QVBoxLayout(device_widget)
+                        device_layout.setSpacing(2)
+                        
+                        name_label = QLabel(f"{device.display_name}")
+                        name_label.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+                        device_layout.addWidget(name_label)
+                        
+                        udid_label = QLabel(f"UDID: {device.short_udid}")
+                        udid_label.setFont(QFont("Segoe UI", 9))
+                        device_layout.addWidget(udid_label)
+                        
+                        if device.ios_version:
+                            ios_label = QLabel(f"iOS: {device.ios_version}")
+                            ios_label.setFont(QFont("Segoe UI", 9))
+                            device_layout.addWidget(ios_label)
+                        
+                        self.device_list_layout.addWidget(device_widget)
+                        device_widget.setProperty("device_index", i)
+                    
+                    self.log_text.append(f"[+] Found {len(devices)} device(s)")
+                else:
+                    self.no_device_label = QLabel("No devices detected")
+                    self.no_device_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    self.device_list_layout.addWidget(self.no_device_label)
+                    self.log_text.append("[!] No devices detected")
+            
+            except ImportError as e:
+                self.log_text.append(f"[!] Device module error: {e}")
+            except Exception as e:
+                self.log_text.append(f"[!] Detection error: {e}")
+        
+        def _install_to_device(self):
+            """Install IPA to connected device."""
+            ipa_path = self.device_ipa_input.text().strip()
+            
+            if not ipa_path:
+                QMessageBox.warning(self, "Warning", "Please select an IPA file to install")
+                return
+            
+            if not self._detected_devices:
+                QMessageBox.warning(self, "Warning", "No devices detected. Please click 'Detect Devices' first.")
+                return
+            
+            # Use first detected device
+            device = self._detected_devices[0]
+            
+            self.log_text.append(self._format_log("=" * 50, "info"))
+            self.log_text.append(self._format_log(f"[>] Installing to {device.display_name}...", "info"))
+            
+            self._set_busy(True, self.device_install_btn)
+            
+            def do_install():
+                try:
+                    from device import get_device_manager
+                    from device.models import InstallationOptions
+                    
+                    manager = get_device_manager()
+                    
+                    def progress_callback(percent, message):
+                        self.log_text.append(self._format_log(f"  [{percent}%] {message}", "info"))
+                    
+                    options = InstallationOptions(progress_callback=progress_callback)
+                    result = manager.install_ipa(device, ipa_path, options)
+                    
+                    return result.success, result.message
+                except Exception as e:
+                    return False, str(e)
+            
+            self.worker = WorkerThread(do_install)
+            self.worker.finished.connect(lambda s, r: self._on_device_install_finished(s, r))
+            self.worker.start()
+        
+        def _on_device_install_finished(self, success: bool, message: str):
+            """Handle device installation completion."""
+            self._set_busy(False, self.device_install_btn)
+            if success:
+                self.log_text.append(self._format_log("[+] Installation successful!", "success"))
+                QMessageBox.information(self, "Success", "IPA installed successfully!")
+            else:
+                self.log_text.append(self._format_log(f"[-] Installation failed: {message}", "error"))
+                QMessageBox.critical(self, "Error", f"Installation failed:\n{message}")
+        
+        def _browse_file(self, line_edit: QLineEdit, filter_str: str):
+            path, _ = QFileDialog.getOpenFileName(self, "Select File", "", filter_str)
+            if path:
+                line_edit.setText(path)
         
         def _browse_dir(self, line_edit: QLineEdit):
             path = QFileDialog.getExistingDirectory(self, "Select Directory")
@@ -1693,158 +1956,259 @@ def run_gui():
             self.worker.finished.connect(lambda s, r: self._on_finished(s, r, self.compile_btn))
             self.worker.start()
         
-        def _apply_styles(self):
-            self.setStyleSheet("""
-                QMainWindow {
-                    background: transparent;
-                }
-                QWidget {
-                    background: transparent;
-                    color: #FFFFFF;
-                }
-                QTabWidget::pane {
-                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                        stop:0 rgba(20, 20, 35, 0.85),
-                        stop:1 rgba(10, 10, 20, 0.9));
-                    border: 1px solid rgba(255, 255, 255, 0.08);
-                    border-top: 1px solid rgba(255, 255, 255, 0.15);
-                    border-radius: 20px;
-                    padding: 5px;
-                }
-                QTabBar {
-                    background: transparent;
-                }
-                QTabBar::tab {
-                    background: rgba(255, 255, 255, 0.03);
-                    color: rgba(255, 255, 255, 0.45);
-                    padding: 10px 28px;
-                    margin: 4px 3px 8px 3px;
-                    border: 1px solid transparent;
-                    border-radius: 12px;
-                    font-size: 12px;
-                    font-weight: 500;
-                    letter-spacing: 0.3px;
-                }
-                QTabBar::tab:selected {
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                        stop:0 rgba(100, 120, 255, 0.25),
-                        stop:1 rgba(150, 100, 255, 0.2));
-                    color: white;
-                    border: 1px solid rgba(255, 255, 255, 0.15);
-                }
-                QTabBar::tab:hover:!selected {
-                    background: rgba(255, 255, 255, 0.08);
-                    color: rgba(255, 255, 255, 0.75);
-                    border: 1px solid rgba(255, 255, 255, 0.05);
-                }
-                QLineEdit {
-                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                        stop:0 rgba(30, 30, 45, 0.9),
-                        stop:1 rgba(20, 20, 35, 0.95));
-                    border: 1px solid rgba(255, 255, 255, 0.1);
-                    border-top: 1px solid rgba(255, 255, 255, 0.15);
-                    border-radius: 14px;
-                    padding: 14px 20px;
-                    color: rgba(255, 255, 255, 0.95);
-                    font-size: 13px;
-                    selection-background-color: rgba(100, 150, 255, 0.4);
-                }
-                QLineEdit:focus {
-                    border: 1px solid rgba(130, 150, 255, 0.5);
-                    border-top: 1px solid rgba(130, 150, 255, 0.6);
-                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                        stop:0 rgba(35, 35, 55, 0.95),
-                        stop:1 rgba(25, 25, 40, 0.98));
-                }
-                QLineEdit::placeholder {
-                    color: rgba(255, 255, 255, 0.3);
-                }
-                QTextEdit {
-                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                        stop:0 rgba(10, 10, 18, 0.95),
-                        stop:1 rgba(5, 5, 12, 0.98));
-                    border: 1px solid rgba(255, 255, 255, 0.08);
-                    border-top: 1px solid rgba(255, 255, 255, 0.12);
-                    border-radius: 14px;
-                    padding: 14px;
-                    color: rgba(200, 200, 210, 0.9);
-                    font-family: 'JetBrains Mono', 'Cascadia Code', 'Consolas', monospace;
-                    font-size: 11px;
-                    line-height: 1.4;
-                }
-                QScrollBar:vertical {
-                    background: rgba(255, 255, 255, 0.02);
-                    width: 6px;
-                    border-radius: 3px;
-                    margin: 4px 2px;
-                }
-                QScrollBar::handle:vertical {
-                    background: rgba(255, 255, 255, 0.15);
-                    border-radius: 3px;
-                    min-height: 40px;
-                }
-                QScrollBar::handle:vertical:hover {
-                    background: rgba(255, 255, 255, 0.25);
-                }
-                QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-                    height: 0;
-                }
-                QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
-                    background: transparent;
-                }
-                QProgressBar {
-                    background: rgba(255, 255, 255, 0.08);
-                    border: none;
-                    border-radius: 2px;
-                }
-                QProgressBar::chunk {
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                        stop:0 rgba(100, 150, 255, 0.8),
-                        stop:1 rgba(180, 100, 255, 0.8));
-                    border-radius: 2px;
-                }
-                QMessageBox {
-                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                        stop:0 #1e1e2e, stop:1 #121218);
-                }
-                QMessageBox QLabel {
-                    color: rgba(255, 255, 255, 0.9);
-                }
-                QMessageBox QPushButton {
-                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                        stop:0 rgba(60, 60, 80, 0.9),
-                        stop:1 rgba(40, 40, 60, 0.95));
-                    border: 1px solid rgba(255, 255, 255, 0.15);
-                    border-radius: 10px;
-                    color: white;
-                    padding: 10px 24px;
-                    min-width: 90px;
-                    font-weight: 500;
-                }
-                QMessageBox QPushButton:hover {
-                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                        stop:0 rgba(80, 80, 100, 0.95),
-                        stop:1 rgba(60, 60, 80, 0.98));
-                    border: 1px solid rgba(255, 255, 255, 0.25);
-                }
-            """)
+        def _run_sign_annual(self):
+            """Run annual signing (P12 + Provisioning)."""
+            ipa_path = self.annual_ipa_input.text().strip()
+            p12_path = self.annual_p12_input.text().strip()
+            password = self.annual_password.text()
+            provision_path = self.annual_provision_input.text().strip()
+            output_path = self.annual_output.text().strip() or None
+            
+            # Validation
+            if not ipa_path:
+                QMessageBox.warning(self, "Warning", "Please select an input IPA file")
+                return
+            if not p12_path:
+                QMessageBox.warning(self, "Warning", "Please select a P12 certificate")
+                return
+            if not provision_path:
+                QMessageBox.warning(self, "Warning", "Please select a provisioning profile")
+                return
+            
+            self.log_text.append(self._format_log("=" * 50, "info"))
+            self.log_text.append(self._format_log("[>] Starting Annual Signing...", "info"))
+            self.log_text.append(self._format_log("[*] Validating certificate and profile...", "info"))
+            
+            self._set_busy(True, self.annual_sign_btn)
+            
+            def sign_task():
+                try:
+                    from signing.annual import AnnualSigner
+                    
+                    signer = AnnualSigner(
+                        p12_path=p12_path,
+                        provision_path=provision_path,
+                        p12_password=password,
+                        log_callback=self._log_from_core
+                    )
+                    
+                    valid, msg = signer.validate()
+                    if not valid:
+                        return False, f"Validation failed: {msg}"
+                    
+                    result = signer.sign_ipa(ipa_path, output_path)
+                    
+                    if result.success:
+                        return True, str(result.output_path)
+                    else:
+                        return False, result.message
+                        
+                except Exception as e:
+                    return False, str(e)
+            
+            self.worker = WorkerThread(sign_task)
+            self.worker.finished.connect(lambda s, r: self._on_sign_annual_finished(s, r))
+            self.worker.start()
+        
+        def _on_sign_annual_finished(self, success: bool, result: str):
+            """Handle annual signing completion with smart install suggestion."""
+            self._set_busy(False, self.annual_sign_btn)
+            if success:
+                self._last_signed_ipa = result
+                self._suggest_device_install(result)
+            else:
+                QMessageBox.critical(self, "Error", result)
+        
+        def _run_sign_weekly(self):
+            """Run weekly signing (Apple ID)."""
+            ipa_path = self.weekly_ipa_input.text().strip()
+            apple_id = self.weekly_apple_id.text().strip()
+            password = self.weekly_password.text()
+            udid = self.weekly_udid.text().strip()
+            code_2fa = self.weekly_2fa.text().strip() or None
+            
+            # Validation
+            if not ipa_path:
+                QMessageBox.warning(self, "Warning", "Please select an input IPA file")
+                return
+            if not apple_id:
+                QMessageBox.warning(self, "Warning", "Please enter your Apple ID")
+                return
+            if not password:
+                QMessageBox.warning(self, "Warning", "Please enter your password")
+                return
+            if not udid:
+                QMessageBox.warning(self, "Warning", "Please enter the device UDID")
+                return
+            
+            # Check if we should reuse existing signer (for 2FA flow)
+            reuse_signer = code_2fa and hasattr(self, '_weekly_signer') and self._weekly_signer is not None
+            
+            self.log_text.append(self._format_log("=" * 50, "info"))
+            self.log_text.append(self._format_log("[>] Starting Weekly Signing...", "info"))
+            self.log_text.append(self._format_log("[*] Authenticating with Apple ID...", "info"))
+            
+            self._set_busy(True, self.weekly_sign_btn)
+            
+            # Capture reuse_signer in closure
+            _reuse_signer = reuse_signer
+            _self = self
+            
+            def sign_task():
+                try:
+                    from signing.weekly import WeeklySigner
+                    from signing.apple_auth import TwoFactorRequired
+                    
+                    # Reuse existing signer if we have 2FA code, otherwise create new
+                    if _reuse_signer:
+                        signer = getattr(_self, '_weekly_signer', None)
+                        if signer is None:
+                            signer = WeeklySigner(log_callback=_self._log_from_core)
+                    else:
+                        signer = WeeklySigner(log_callback=_self._log_from_core)
+                    
+                    # Store for 2FA flow (always)
+                    _self._weekly_signer = signer
+                    
+                    try:
+                        success, msg = signer.authenticate(apple_id, password, code_2fa)
+                    except TwoFactorRequired as e:
+                        # 2FA code was sent to device - keep signer for later
+                        return False, "2FA_REQUIRED:"
+                    
+                    if not success:
+                        return False, f"Authentication failed: {msg}"
+                    
+                    result = signer.sign_ipa(ipa_path, None, udid)
+                    
+                    if result.success:
+                        return True, str(result.output_path)
+                    else:
+                        return False, result.message
+                        
+                except Exception as e:
+                    import traceback
+                    traceback.print_exc()
+                    return False, str(e)
+            
+            self.worker = WorkerThread(sign_task)
+            self.worker.finished.connect(lambda s, r: self._on_sign_weekly_finished(s, r))
+            self.worker.start()
+        
+        def _on_sign_weekly_finished(self, success: bool, result: str):
+            """Handle weekly signing completion with smart install suggestion."""
+            self._set_busy(False, self.weekly_sign_btn)
+            if success:
+                self._weekly_signer = None  # Clear signer on success
+                self._last_signed_ipa = result
+                self._suggest_device_install(result, is_weekly=True)
+            elif result.startswith("2FA_REQUIRED"):
+                # Show 2FA input dialog - signer is preserved for next call
+                self.log_text.append(self._format_log("[*] 2FA code sent to your devices", "info"))
+                self._show_2fa_dialog()
+            else:
+                self._weekly_signer = None  # Clear signer on error
+                QMessageBox.critical(self, "Error", result)
+        
+        def _show_2fa_dialog(self):
+            """Show popup dialog to enter 2FA code."""
+            from PyQt6.QtWidgets import QInputDialog
+            
+            code, ok = QInputDialog.getText(
+                self,
+                "Two-Factor Authentication",
+                "A verification code was sent to your Apple devices.\n\nEnter the 6-digit code:",
+                QLineEdit.EchoMode.Normal,
+                ""
+            )
+            
+            if ok and code:
+                code = code.strip().replace(" ", "").replace("-", "")
+                if len(code) == 6 and code.isdigit():
+                    # Set the code and re-run signing
+                    self.weekly_2fa.setText(code)
+                    self._run_sign_weekly()
+                else:
+                    QMessageBox.warning(self, "Invalid Code", "Please enter a valid 6-digit code.")
+                    self._show_2fa_dialog()  # Show dialog again
+            else:
+                self.log_text.append(self._format_log("[!] 2FA verification cancelled", "warning"))
+        
+        def _suggest_device_install(self, signed_ipa_path: str, is_weekly: bool = False):
+            """Smart suggestion to install signed IPA to connected device."""
+            try:
+                from device import get_device_manager
+                
+                # Check if device module is available
+                available, _ = _check_device_available()
+                if not available:
+                    # Just show success without device suggestion
+                    validity_msg = "\n\n⚠️ Valid for 7 days only!" if is_weekly else ""
+                    QMessageBox.information(
+                        self, 
+                        "Success", 
+                        f"Signed IPA created:\n{signed_ipa_path}{validity_msg}"
+                    )
+                    return
+                
+                manager = get_device_manager()
+                devices = manager.detect_devices()
+                
+                if not devices:
+                    # No device connected, just show success
+                    validity_msg = "\n\n⚠️ Valid for 7 days only!" if is_weekly else ""
+                    QMessageBox.information(
+                        self, 
+                        "Success", 
+                        f"Signed IPA created:\n{signed_ipa_path}{validity_msg}"
+                    )
+                    return
+                
+                # Device found! Ask user if they want to install
+                device = devices[0]
+                validity_msg = "\n⚠️ Signature valid for 7 days only!" if is_weekly else ""
+                
+                reply = QMessageBox.question(
+                    self,
+                    "Install to Device?",
+                    f"Signed IPA created successfully!\n\n"
+                    f"📄 {Path(signed_ipa_path).name}\n"
+                    f"📱 Device detected: {device.display_name}\n"
+                    f"{validity_msg}\n\n"
+                    f"Would you like to install it to the device now?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.Yes
+                )
+                
+                if reply == QMessageBox.StandardButton.Yes:
+                    # Fill in the device tab and trigger install
+                    self.device_ipa_input.setText(signed_ipa_path)
+                    self._detected_devices = devices
+                    self.tabs.setCurrentWidget(self.tabs.widget(self.tabs.count() - 1))  # Switch to Device tab
+                    self._install_to_device()
+                else:
+                    self.log_text.append(self._format_log(f"[+] Signed IPA saved: {signed_ipa_path}", "success"))
+                    
+            except ImportError:
+                # Device module not available, just show success
+                validity_msg = "\n\n⚠️ Valid for 7 days only!" if is_weekly else ""
+                QMessageBox.information(
+                    self, 
+                    "Success", 
+                    f"Signed IPA created:\n{signed_ipa_path}{validity_msg}"
+                )
+            except Exception as e:
+                # Error checking devices, still show success for signing
+                validity_msg = "\n\n⚠️ Valid for 7 days only!" if is_weekly else ""
+                QMessageBox.information(
+                    self, 
+                    "Success", 
+                    f"Signed IPA created:\n{signed_ipa_path}{validity_msg}"
+                )
     
     # Run the application
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
-    
-    # Dark palette
-    palette = QPalette()
-    palette.setColor(QPalette.ColorRole.Window, QColor(0, 0, 0))
-    palette.setColor(QPalette.ColorRole.WindowText, QColor(255, 255, 255))
-    palette.setColor(QPalette.ColorRole.Base, QColor(10, 10, 10))
-    palette.setColor(QPalette.ColorRole.AlternateBase, QColor(20, 20, 20))
-    palette.setColor(QPalette.ColorRole.Text, QColor(255, 255, 255))
-    palette.setColor(QPalette.ColorRole.Button, QColor(30, 30, 30))
-    palette.setColor(QPalette.ColorRole.ButtonText, QColor(255, 255, 255))
-    palette.setColor(QPalette.ColorRole.Highlight, QColor(80, 80, 80))
-    palette.setColor(QPalette.ColorRole.HighlightedText, QColor(255, 255, 255))
-    app.setPalette(palette)
     
     # Set application icon (for taskbar)
     if logo_path.exists():

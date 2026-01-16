@@ -1,6 +1,6 @@
 # [>] IOS TOOLS
 
-**Cross-platform CLI & GUI utility for iOS development** - Convert apps to IPA, build DEB packages, compile dylibs, and create standalone executables.
+**Cross-platform CLI & GUI utility for iOS development** - Convert apps to IPA, build DEB packages, compile dylibs, sign IPAs, and create standalone executables.
 
 ![Python 3.11+](https://img.shields.io/badge/Python-3.11+-blue.svg)
 ![PyQt6](https://img.shields.io/badge/GUI-PyQt6-green.svg)
@@ -13,16 +13,25 @@
 - [x] **folder2deb** - Build Debian packages for iOS
 - [x] **build-dylib** - Compile dynamic libraries with Theos or clang
 - [x] **compile** - Create standalone executables (.exe, Linux, macOS, BSD)
+- [x] **sign-annual** - Sign IPAs with Apple Developer Certificate (1 year validity)
+- [x] **sign-weekly** - Sign IPAs with free Apple ID (7 days, like AltStore/Sideloadly)
 - [x] **Cross-platform** - Works on Windows, Linux, macOS, and BSD
 - [x] **CLI + GUI** - Use from terminal or graphical interface
+- [x] **Modular Architecture** - Signing features are optional extensions
 
 ## [>] Installation
 
 ### Requirements
 
 ```bash
-# Install dependencies
+# Core dependencies (required)
 pip install PyQt6 "typer[all]" pyinstaller
+
+# Signing dependencies (optional - for IPA signing features)
+pip install cryptography pyOpenSSL
+
+# Weekly signing (Apple ID) - additional dependency
+pip install requests
 ```
 
 ### Platform-specific requirements
@@ -224,6 +233,112 @@ python ios_tool.py compile --no-onefile
 | macOS    | `ios_tool-macos-amd64` | `ios_tool-macos-arm64` |
 | BSD      | `ios_tool-bsd-amd64` | `ios_tool-bsd-arm64` |
 
+---
+
+### 5. sign-annual - Sign IPA with Developer Certificate
+
+Sign IPAs using your Apple Developer Certificate (valid for 1 year).
+
+```bash
+# Basic usage
+python ios_tool.py sign-annual input.ipa -p certificate.p12 -m app.mobileprovision
+
+# With password
+python ios_tool.py sign-annual input.ipa -p cert.p12 -m app.mobileprovision -w "mypassword"
+
+# Specify output
+python ios_tool.py sign-annual input.ipa -p cert.p12 -m app.mobileprovision -o signed.ipa
+
+# Change bundle ID
+python ios_tool.py sign-annual input.ipa -p cert.p12 -m app.mobileprovision -b com.new.bundleid
+```
+
+**Requirements:**
+- `.p12` certificate file (export from Keychain Access or Apple Developer Portal)
+- `.mobileprovision` file (download from Apple Developer Portal)
+- Optional: P12 password
+
+**Supported Certificate Types:**
+- Apple Development
+- Apple Distribution  
+- iOS Development
+- iOS Distribution
+- Enterprise Distribution
+
+---
+
+### 6. sign-weekly - Sign IPA with Apple ID (7 Days)
+
+Sign IPAs using a free Apple ID, similar to AltStore/Sideloadly (valid for 7 days).
+
+```bash
+# Basic usage
+python ios_tool.py sign-weekly input.ipa -a "email@icloud.com" -w "password" -u "DEVICE-UDID"
+
+# With 2FA code
+python ios_tool.py sign-weekly input.ipa -a "email@icloud.com" -w "password" -u "UDID" -c 123456
+
+# Specify output
+python ios_tool.py sign-weekly input.ipa -a "email@icloud.com" -w "password" -u "UDID" -o signed.ipa
+```
+
+**Requirements:**
+- Apple ID (free account works)
+- Apple ID password or App-Specific Password
+- Target device UDID (40-character hex string)
+- Internet connection
+
+**How to get Device UDID:**
+1. Connect device to computer
+2. Open iTunes/Finder
+3. Click on device serial number until UDID appears
+4. Copy the 40-character string
+
+**Limitations (Apple-imposed):**
+| Limit | Value |
+|-------|-------|
+| Signature Validity | 7 days |
+| Max Apps Simultaneously | 3 |
+| Max App IDs per Week | 10 |
+| Re-signing Required | Every 7 days |
+
+---
+
+### 7. sign-info - Show Signing Module Status
+
+```bash
+python ios_tool.py sign-info
+```
+
+Shows:
+- Module availability status
+- Installed dependencies
+- Available signing methods
+
+---
+
+## 🔐 Signing Module Architecture
+
+The signing system is designed as a **modular extension** that doesn't affect existing functionality:
+
+```
+signing/
+├── __init__.py       # Module loader and availability checks
+├── models.py         # Data classes (Certificate, Profile, etc.)
+├── crypto_utils.py   # Cryptographic utilities (P12, CMS)
+├── core.py           # Core signing operations (shared)
+├── annual.py         # Annual signing (P12 + Provisioning)
+├── weekly.py         # Weekly signing (Apple ID)
+└── apple_auth.py     # Apple ID authentication
+```
+
+**Key Features:**
+- ✅ Completely optional - doesn't break existing features if not installed
+- ✅ Lazy loading - only loads when signing commands are used
+- ✅ Cross-platform - works on Windows, Linux, macOS, BSD
+- ✅ No Apple server bypass - follows Apple's Terms of Service
+- ✅ Modular design - easy to extend with new signing methods
+
 **Architecture Guide:**
 | Architecture | Description | Examples |
 |-------------|-------------|----------|
@@ -319,7 +434,7 @@ The GUI features a stunning Grok AI-style interface with:
 
 ```bash
 # Clone the repository
-git clone https://github.com/20obb/ios-tool.git
+git clone https://github.com/yourusername/ios-tool.git
 cd ios-tool
 
 # Install dependencies
@@ -334,4 +449,3 @@ pytest
 ## 📄 License
 
 MIT License - Feel free to use, modify, and distribute!
-
